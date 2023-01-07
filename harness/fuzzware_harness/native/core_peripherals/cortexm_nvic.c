@@ -919,19 +919,21 @@ void ExceptionReturn(uc_engine *uc, uint32_t ret_pc) {
             // We are coming from Handler Mode (which always uses SP_main) and
             // return to Thread Mode which uses SP_process. Switch to SP_process
             uint32_t new_SPSEL_now_psp = 1;
-            uint32_t SP_process, SP_main;
-            uc_reg_read(uc, UC_ARM_REG_SP, &SP_main);
-            uc_reg_read(uc, UC_ARM_REG_OTHER_SP, &SP_process);
+            uint32_t SP_control;
+            // Get SP_control. If control[1]=1, then we are in SP_process; Else, we are in SP_MSP. 
+            uc_reg_read(uc, UC_ARM_REG_CONTROL, &SP_control);
+            if(SP_control & 0x2 != 0x2){
+            // When in SP_process, Back up SP_main
+                // set Control[1]=1;
+                SP_control ^= 0x2;
+                uc_reg_write(uc, UC_ARM_REG_CONTROL, &SP_control);
 
-            // Back up SP_main
-            uc_reg_write(uc, UC_ARM_REG_OTHER_SP, &SP_main);
-            uc_reg_write(uc, UC_ARM_REG_SP, &SP_process);
-
-            // Switch the CPU state to indicate the new SPSEL state
-            // 1. In pstate register
-            uc_reg_write(uc, UC_ARM_REG_SPSEL, &new_SPSEL_now_psp);
-            // 2. In cached spsel field
-            uc_reg_write(uc, UC_ARM_REG_CURR_SP_MODE_IS_PSP, &new_SPSEL_now_psp);
+                // Switch the CPU state to indicate the new SPSEL state
+                // 1. In pstate register
+                uc_reg_write(uc, UC_ARM_REG_SPSEL, &new_SPSEL_now_psp);
+                // 2. In cached spsel field
+                uc_reg_write(uc, UC_ARM_REG_CURR_SP_MODE_IS_PSP, &new_SPSEL_now_psp);
+            }
         }
     }
 
@@ -1035,16 +1037,14 @@ static void ExceptionEntry(uc_engine *uc, bool is_tail_chained, bool skip_instru
             // We are coming from Thread mode in case we are not tail-chained and had no previously active IRQ
             new_lr |= NVIC_INTERRUPT_ENTRY_LR_THREADMODE_FLAG;
 
-            if(GET_CURR_SP_MODE_IS_PSP()) {
-                // We are coming from Thread Mode which uses SP_process. Switch it to SP_main
+            uint32_t SP_control;
+            uc_reg_read(uc, UC_ARM_REG_CONTROL, &SP_control);
+            if(SP_control & 0x2 ==0x2){
+            // We are coming from Thread Mode which uses SP_process. Switch it to SP_main
                 uint32_t new_SPSEL_not_psp = 0;
-                uint32_t SP_process, SP_main;
-                uc_reg_read(uc, UC_ARM_REG_SP, &SP_process);
-                uc_reg_read(uc, UC_ARM_REG_OTHER_SP, &SP_main);
-
-                // Back up SP_process
-                uc_reg_write(uc, UC_ARM_REG_OTHER_SP, &SP_process);
-                uc_reg_write(uc, UC_ARM_REG_SP, &SP_main);
+                // set Control[1]=0;
+                SP_control ^= 0x2; 
+                uc_reg_write(uc, UC_ARM_REG_CONTROL, &SP_control);
 
                 // Switch the CPU state to indicate the new SPSEL state
                 // 1. In pstate register
