@@ -345,6 +345,11 @@ nvic:
   vtor: 0
   # configure the maximum number of vectors in the nvic, defaults to 256
   num_vecs: 256
+  # disable certain irq numbers
+  disabled_irqs:
+  # NOTE: these are external interrupts (16 and higher), i.e., specifying value "12" disables vector entry with index 16+12.
+  #       In the example, the affected interrupt handler address would be located at VTOR+4*(16+12)
+  - 12
 
 # We can specify timers to perform different actions during emulation periodically
 # WARNING: if used in fuzzing, Python-based handlers slow down fuzzing a lot
