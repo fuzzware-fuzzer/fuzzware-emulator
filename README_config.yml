@@ -52,7 +52,9 @@ memory_map:
     # offset into the blob can be specified to fetch entry state information from (optional).
     ivt_offset: 0x2000,
     # (optional)
-    # If a part of the file should be skipped, use 'load_offset'
+    # If a part of the file should be skipped, use 'file_offset'
+    file_offset: 0x2000,
+    # If the file contents should be written to an offset into the memory region, use 'load_offset'
     load_offset: 0x2000
   }
   # A region which is not backed by a file, defaults to all zeroes
