@@ -18,10 +18,11 @@ trace_file = None
 
 def trace_mem_access(uc, target, access, address, size, value):
     global trace_file
+    access_type = access
     event = TraceEvent.new_message()
     access = event.init('access')
     access.target = target
-    access.type = "write" if access == UC_MEM_WRITE else "read"
+    access.type = "write" if access_type == UC_MEM_WRITE else "read"
     access.size = size
     access.pc = uc.reg_read(UC_ARM_REG_PC)
     access.address = address
