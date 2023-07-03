@@ -265,7 +265,7 @@ class GDBServer(Thread):
             return val.encode()
 
         except Exception as e:
-            logger.warn(f'Error in mem_read: {e}')
+            logger.warning(f'Error in mem_read: {e}')
             return b'E00'
 
 
@@ -277,7 +277,7 @@ class GDBServer(Thread):
             return b'OK'
 
         except Exception as e:
-            logger.warn(f'Error in mem_write: {e}')
+            logger.warning(f'Error in mem_write: {e}')
             return b'E00'
 
 
@@ -306,7 +306,7 @@ class GDBServer(Thread):
             if a == addr:
                 matches.append(n)
         if len(matches) == 0:
-            logger.warn(f'GDB tried to remove non existing bp for {addr}')
+            logger.warning(f'GDB tried to remove non existing bp for {addr}')
             logger.info(self.bps)
             return b'E00'
 
@@ -357,7 +357,7 @@ class GDBServer(Thread):
                 self.check_breakpoint_hit()
                 continue
             except ConnectionResetError:
-                logger.warn("Remote side disconnected, continuing target")
+                logger.warning("Remote side disconnected, continuing target")
                 self.running.set()
                 break
 
