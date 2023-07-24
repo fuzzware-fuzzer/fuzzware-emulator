@@ -197,10 +197,6 @@ def configure_unicorn(args):
     if args.bb_set_file or args.mmio_set_file or args.bb_hash_file:
         native.init_native_tracing(uc, args.bb_set_file, args.bb_hash_file, args.mmio_set_file, mmio_ranges)
 
-    if args.bintrace_file is not None:
-        from .tracing import bintrace
-        bintrace.init_tracing(args.bintrace_file, uc, config, mmio_ranges)
-
     if args.exit_at_bbl != globs.EXIT_AT_NONE:
         exit_at_bbls = [parse_address_value(uc.symbols, args.exit_at_bbl)]
     elif config.get('exit_at') and (config.get('use_exit_at') is not False):
@@ -348,7 +344,6 @@ def populate_parser(parser):
     parser.add_argument('--bb-set-out', dest='bb_set_file', default=None, help="Trace (compact) set of visited basic blocks into binary file.")
     parser.add_argument('--mmio-set-out', dest='mmio_set_file', default=None, help="Trace (compact) set of MMIO access contexts into binary file.")
     parser.add_argument('--bb-hash-out', dest='bb_hash_file', default=None, help="Hash together all sequentially visited basic blocks into binary file. This can be used to compare executions.")
-    parser.add_argument('--trace-out', dest='bintrace_file', default=None, help="Trace MMIO, RAM and BasicBlocks into binary file.")
     parser.add_argument('--dynamic-trace-file-revisions', default=False, action="store_true", help="Instead of overriding trace files for basic block traces, create numbered versions. Could be useful for debugging tracing issues.")
 
     # MMIO access state generation

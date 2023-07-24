@@ -8,4 +8,3 @@ capstone
 IPython
 ipdb
 monkeyhex
-pycapnp==v1.0.0b1
