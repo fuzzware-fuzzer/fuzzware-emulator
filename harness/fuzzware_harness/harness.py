@@ -214,17 +214,6 @@ def configure_unicorn(args):
     else:
         exit_at_bbls = []
 
-    # Native mmio fuzzing
-    native.init(uc, mmio_ranges, exit_at_bbls, args.exit_at_hit_num, args.print_exit_info, args.fuzz_consumption_timeout, args.basic_block_limit)
-
-    # Timer Setup
-    global_timer_scale = config['global_timer_scale'] if 'global_timer_scale' in config else 1
-    native.init_timer_hook(uc, global_timer_scale)
-    timer.configure_timers(uc, config)
-
-    # MMIO modeling and listener setup
-    parse_mmio_model_config(uc, config)
-
     # Step 3: Set the handlers
     if 'handlers' in config and config['handlers']:
         for fname, handler_desc in config['handlers'].items():
@@ -261,6 +250,17 @@ def configure_unicorn(args):
             # Actually hook the thing
             logger.info(f"Handling function {str(fname)} at {addr:#10x} with {str(handler_desc['handler'])}")
             add_func_hook(uc, addr, handler_desc['handler'], do_return=handler_desc['do_return'])
+
+    # Native mmio fuzzing
+    native.init(uc, mmio_ranges, exit_at_bbls, args.exit_at_hit_num, args.print_exit_info, args.fuzz_consumption_timeout, args.basic_block_limit)
+
+    # Timer Setup
+    global_timer_scale = config['global_timer_scale'] if 'global_timer_scale' in config else 1
+    native.init_timer_hook(uc, global_timer_scale)
+    timer.configure_timers(uc, config)
+
+    # MMIO modeling and listener setup
+    parse_mmio_model_config(uc, config)
 
     # Implementation detail: Interrupt triggers need to be configured before the nvic (to enable multiple interrupt enabling)
     if 'interrupt_triggers' in config and config['interrupt_triggers']:
