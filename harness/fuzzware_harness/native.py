@@ -317,7 +317,7 @@ def load_native_lib(native_lib_path):
 
 def do_exit(uc, status, sig=-1):
     global native_lib
-    native_lib.do_exit(uc, status, sig)
+    native_lib.do_exit(uc._uch, status)
 
 def init(uc, mmio_regions, exit_at_bbls, exit_at_hit_num, do_print_exit_info, fuzz_consumption_timeout=DEFAULT_FUZZ_CONSUMPTION_TIMEOUT, instr_limit=DEFAULT_BASIC_BLOCK_LIMIT):
     global native_lib
@@ -331,7 +331,7 @@ def init(uc, mmio_regions, exit_at_bbls, exit_at_hit_num, do_print_exit_info, fu
     # uc_err remove_function_handler_hook_address(uc_engine * uc, uint64_t address);
     _setup_prototype(native_lib, "remove_function_handler_hook_address", ctypes.c_int, uc_engine, ctypes.c_uint64)
     # void do_exit(uc_engine *uc, int status, int sig);
-    _setup_prototype(native_lib, "do_exit", ctypes.c_int, uc_engine, ctypes.c_int, ctypes.c_int)
+    _setup_prototype(native_lib, "do_exit", ctypes.c_int, uc_engine, ctypes.c_int)
 
     # FUZZING
     _setup_prototype(native_lib, "load_fuzz", ctypes.c_int, ctypes.c_char_p)
