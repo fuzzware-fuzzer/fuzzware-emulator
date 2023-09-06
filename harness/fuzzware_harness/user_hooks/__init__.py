@@ -88,6 +88,7 @@ def add_func_hook(uc, addr, func, do_return=True):
                 logger.error("Unable to hook function %s at address %#08x" % (repr(func), addr))
                 traceback.print_exc()
                 do_exit(uc, 1)
+                sys.exit(1)
         else:
             func_obj = func
 
