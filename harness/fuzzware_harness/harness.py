@@ -262,8 +262,9 @@ def configure_unicorn(args):
     # MMIO modeling and listener setup
     parse_mmio_model_config(uc, config)
 
+    use_nvic = use_systick or ('use_nvic' in config and config['use_nvic'] is True)
     # Implementation detail: Interrupt triggers need to be configured before the nvic (to enable multiple interrupt enabling)
-    if 'interrupt_triggers' in config and config['interrupt_triggers']:
+    if use_nvic and 'interrupt_triggers' in config and config['interrupt_triggers']:
         interrupt_triggers.init_triggers(uc, config['interrupt_triggers'])
 
     # We enable systick by default
@@ -286,7 +287,6 @@ def configure_unicorn(args):
         add_block_hook(unicorn_trace_syms)
 
     # Configure nvic. We need to be a bit verbose here as we need to auto-enable the nvic for isr fuzzing
-    use_nvic = use_systick or ('use_nvic' in config and config['use_nvic'] is True)
     if use_nvic:
         nvic_cfg = config.get('nvic', {})
         num_vecs = nvic_cfg.get('num_vecs', globs.DEFAULT_NUM_NVIC_VECS)
