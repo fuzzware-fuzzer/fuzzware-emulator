@@ -261,14 +261,14 @@ def configure_unicorn(args):
 
     # MMIO modeling and listener setup
     parse_mmio_model_config(uc, config)
-
+  
+    # We enable systick by default
+    use_systick = ('use_systick' not in config or ('use_systick' in config and config['use_systick'] is True))
     use_nvic = use_systick or ('use_nvic' in config and config['use_nvic'] is True)
     # Implementation detail: Interrupt triggers need to be configured before the nvic (to enable multiple interrupt enabling)
     if use_nvic and 'interrupt_triggers' in config and config['interrupt_triggers']:
         interrupt_triggers.init_triggers(uc, config['interrupt_triggers'])
 
-    # We enable systick by default
-    use_systick = ('use_systick' not in config or ('use_systick' in config and config['use_systick'] is True))
     if use_systick:
         systick_cfg = config.get('systick', {})
         systick_reload_val = systick_cfg.get('reload_val', globs.SYSTICK_RELOAD_VAL_NONE)
