@@ -658,7 +658,7 @@ static void handle_aircr_write(uc_engine *uc, uint32_t value) {
         if(do_print_exit_info) {
             puts("SYSCTL_AIRCR write indicated system reset, stopping emulation");
         }
-        do_exit(uc, UC_ERR_EXCEPTION);
+        do_exit(uc, UC_ERR_OK);
     }
 
     // PRIGROUP
