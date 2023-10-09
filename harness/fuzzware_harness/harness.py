@@ -78,7 +78,7 @@ def configure_unicorn(args):
         entry_region['is_entry'] = True
 
     # Load and register region contents
-    for rname, region in config['memory_map'].items():
+    for rname, region in sorted(config['memory_map'].items(), key=lambda r: 1 if r[1].get('overlay', False) else 0):
         prot = 0
         if 'permissions' not in region:
             logger.warning(f"defaulting to RWX permissions for region {rname}")
@@ -103,20 +103,20 @@ def configure_unicorn(args):
         start, size = parse_address_value(uc.symbols, region['base_addr']), region['size']
         logger.debug(f"Mapping region {str(rname)} at {hex(size)}, perms: {int(prot)}")
 
-        if size & (globs.PAGE_SIZE-1) != 0:
-            logger.warning(f"Size 0x{size:x} of region '{rname}' not page aligned. Aligning to next page boundary size.")
-            size -= size & (globs.PAGE_SIZE-1)
-            size += globs.PAGE_SIZE
+        if not region.get('overlay', False):
+            if size & (globs.PAGE_SIZE-1) != 0:
+                logger.warning(f"Size 0x{size:x} of region '{rname}' not page aligned. Aligning to next page boundary size.")
+                size -= size & (globs.PAGE_SIZE-1)
+                size += globs.PAGE_SIZE
 
-        if start & (globs.PAGE_SIZE-1) != 0:
-            logger.warning(f"Start of region '{rname}' is not page aligned. Aligning to previous page boundary.")
-            unalignment = start & (globs.PAGE_SIZE-1)
-            start -= unalignment
-            # Make sure file contents and vector table still end up where they were supposed to
-            region['load_offset'] = (region.get('load_offset') or 0) + unalignment
-            region['ivt_offset'] = (region.get('ivt_offset') or 0) + unalignment
+            if start & (globs.PAGE_SIZE-1) != 0:
+                logger.warning(f"Start of region '{rname}' is not page aligned. Aligning to previous page boundary.")
+                unalignment = start & (globs.PAGE_SIZE-1)
+                start -= unalignment
+                # Make sure file contents and vector table still end up where they were supposed to
+                region['load_offset'] = (region.get('load_offset') or 0) + unalignment
+                region['ivt_offset'] = (region.get('ivt_offset') or 0) + unalignment
 
-        if 'artificial' not in region and 'overlay' not in region:
             # Check for memory region overlaps
             own_end = start + size
             for region_name, (other_start, other_size, _) in regions.items():
