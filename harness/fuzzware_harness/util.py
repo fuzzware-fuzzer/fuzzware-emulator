@@ -186,16 +186,3 @@ def load_config_deep(path):
     if config is None:
         return {}
     return resolve_config_includes(config, path)
-
-def guess_symbol(syms_by_addr, address):
-    """
-    Guess the (function) symbol of a memory address, that is, return the
-    one that's nearest when decreasing the address.
-    """
-
-    current = None
-    for addr in syms_by_addr:
-        if addr > address:
-            break
-        current = syms_by_addr[addr]
-    return current
