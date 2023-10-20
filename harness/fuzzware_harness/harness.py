@@ -15,14 +15,19 @@ from .tracing import snapshot, trace_bbs, trace_ids, trace_mem
 from .user_hooks import (add_block_hook, add_func_hook,
                          maybe_register_global_block_hook)
 from .util import (bytes2int, load_config_deep, parse_address_value,
-                   parse_symbols, resolve_region_file_paths)
+                   parse_symbols, resolve_region_file_paths, closest_symbol)
 
 logging.basicConfig(stream=sys.stdout, level=logging.WARNING)
 logger = logging.getLogger("emulator")
 
-def unicorn_trace_syms(uc, address, size=0, user_data=None):
-    if address in uc.syms_by_addr:
-        print(f"Calling function: {uc.syms_by_addr[address]}", flush=True)
+def unicorn_trace_syms(uc, pc, size=0, user_data=None):
+    if pc in uc.syms_by_addr:
+        print(f"Calling function: {uc.syms_by_addr[pc]}", flush=False, end="")
+        lr = uc.regs.lr
+        lr_sym = closest_symbol(uc.syms_by_addr, lr)[0]
+        if lr_sym:
+            print(f" from {lr_sym}", flush=False, end="")
+        print(f" (PC={hex(pc)}, LR={hex(lr)})", flush=True)
         sys.stdout.flush()
 
 def configure_unicorn(args):
