@@ -195,7 +195,12 @@ static inline void remove_active_timer(struct Timer *tim) {
     if(cursor == tim ) {
         // We are changing the front, so also the intermediate ticks
         timers.active_head = tim->next;
-        timers.cur_countdown = timers.cur_interval = timers.active_head->ticker_val;
+        if (timers.active_head == NULL) {
+            timers.cur_countdown = MAX_RELOAD_VAL;
+            timers.cur_interval = MAX_RELOAD_VAL;
+        } else {
+            timers.cur_countdown = timers.cur_interval = timers.active_head->ticker_val;
+        }
     } else {
         // We are changing something in the middle, we can just unlink it
         for(; cursor->next != tim; cursor = cursor->next);
