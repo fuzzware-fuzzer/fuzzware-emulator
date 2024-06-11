@@ -178,6 +178,16 @@ def resolve_region_file_paths(config_file_path, config):
             region['file'] = resolve_config_file_pattern(os.path.dirname(config_file_path), path)
             logger.info("Found path '{}' for pattern '{}'".format(region['file'], path))
 
+def resolve_region_base_addrs(config, symbols):
+    """
+    Replaces memory region base address symbols by their numeric value
+    """
+    for region_name, region in config['memory_map'].items():
+        if 'base_addr' not in region:
+            logger.error(f"Region '{region_name}' has no 'base_addr' entry. Please specify its base address!")
+            sys.exit(1)
+        region['base_addr'] = parse_address_value(symbols, region['base_addr'])
+
 def load_config_deep(path):
     if not os.path.isfile(path):
         return {}

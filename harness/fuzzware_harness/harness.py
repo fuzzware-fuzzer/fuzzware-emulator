@@ -15,7 +15,8 @@ from .tracing import snapshot, trace_bbs, trace_ids, trace_mem
 from .user_hooks import (add_block_hook, add_func_hook,
                          maybe_register_global_block_hook)
 from .util import (bytes2int, load_config_deep, parse_address_value,
-                   parse_symbols, resolve_region_file_paths, closest_symbol)
+                   parse_symbols, resolve_region_file_paths, closest_symbol,
+                   resolve_region_base_addrs)
 
 logging.basicConfig(stream=sys.stdout, level=logging.WARNING)
 logger = logging.getLogger("emulator")
@@ -66,6 +67,7 @@ def configure_unicorn(args):
     vtor = globs.NVIC_VTOR_NONE
     entry_image_base = None
     resolve_region_file_paths(args.config, config)
+    resolve_region_base_addrs(config, uc.symbols)
 
     # Entry region recovery
     file_backed_regions = {rname: region for rname, region in config['memory_map'].items() if 'file' in region}
