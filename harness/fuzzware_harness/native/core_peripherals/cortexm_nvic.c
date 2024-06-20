@@ -922,7 +922,7 @@ void ExceptionReturn(uc_engine *uc, uint32_t ret_pc) {
             uint32_t SP_control;
             // Get SP_control. If control[1]=1, then we are in SP_process; Else, we are in SP_MSP. 
             uc_reg_read(uc, UC_ARM_REG_CONTROL, &SP_control);
-            if(SP_control & 0x2 != 0x2){
+            if((SP_control & 0x2) != 0x2){
             // When in SP_process, Back up SP_main
                 // set Control[1]=1;
                 SP_control ^= 0x2;
@@ -1039,7 +1039,7 @@ static void ExceptionEntry(uc_engine *uc, bool is_tail_chained, bool skip_instru
 
             uint32_t SP_control;
             uc_reg_read(uc, UC_ARM_REG_CONTROL, &SP_control);
-            if(SP_control & 0x2 ==0x2){
+            if((SP_control & 0x2) == 0x2){
             // We are coming from Thread Mode which uses SP_process. Switch it to SP_main
                 uint32_t new_SPSEL_not_psp = 0;
                 // set Control[1]=0;
