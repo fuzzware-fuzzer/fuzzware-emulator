@@ -1120,6 +1120,8 @@ uc_err emulate(uc_engine *uc, char *p_input_path, char *prefix_input_path) {
     // TODO: This seems to be the case when unicorn is stopped, but need to re-visit
     // adjust_timers_for_unicorn_exit();
 
+    input_already_given = 0;
+    duplicate_exit = false;
     if(do_fuzz) {
         uc_fuzzer_reset_cov(uc, 1);
         uc_reg_read(uc, UC_ARM_REG_PC, &pc);
@@ -1130,8 +1132,6 @@ uc_err emulate(uc_engine *uc, char *p_input_path, char *prefix_input_path) {
         int count = 0;
         int tmp = 0;
         int sig;
-        input_already_given = 0;
-        duplicate_exit = false;
         for(;;) {
             ++count;
 
@@ -1165,7 +1165,6 @@ uc_err emulate(uc_engine *uc, char *p_input_path, char *prefix_input_path) {
         }
     } else {
         puts("Running without a fork server");
-        duplicate_exit = false;
 
         // Not running under fork server
         int sig = run_single(uc);
