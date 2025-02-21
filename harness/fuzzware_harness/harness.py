@@ -107,7 +107,7 @@ def configure_unicorn(args):
                 logger.error(f"'{attr_name}' missing for region '{rname}'. Please complete the memory region definition.")
                 sys.exit(1)
 
-        start, size = parse_address_value(uc.symbols, region['base_addr']), region['size']
+        start, size = region['base_addr'], region['size']
         logger.debug(f"Mapping region {str(rname)} at {hex(size)}, perms: {int(prot)}")
 
         if not region.get('overlay', False):
