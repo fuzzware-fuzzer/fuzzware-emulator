@@ -52,9 +52,7 @@ def printf(uc):
         output += msg[prev_ind:cursor]
         cursor += 1
 
-        num_str = b""
         while msg[cursor] in digits.encode():
-            num_str += msg[cursor]
             cursor += 1
         while msg[cursor] == ord('l'):
             cursor += 1
