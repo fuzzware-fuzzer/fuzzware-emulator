@@ -711,9 +711,6 @@ void hook_sysctl_mmio_write(uc_engine *uc, uc_mem_type type,
                 // Valid key, process write
                 handle_aircr_write(uc, value);
             }
-            #ifdef NVIC_ASSERTIONS
-            nvic_assert((value & 0xffff0000u) == VECTKEY_HIWORD_MAGIC_WRITE, "Expected SYSCTL_AIRCR write key to be correct, but it is not equal to VECTKEY_HIWORD_MAGIC_WRITE");
-            #endif
             break;
         case SYSCTL_CCR: // Configuration and Control Register
             break;
