@@ -81,7 +81,7 @@ def emulate(uc, fuzz_file_path, prefix_input_file_path=None):
     native_lib.emulate(uc._uch, fuzz_file_path.encode(), prefix_input_file_path)
 
 def get_fuzz(uc, size):
-    ptr = (ctypes.c_char * size).from_address(native_lib.get_fuzz_ptr(uc, size))
+    ptr = (ctypes.c_char * size).from_address(native_lib.get_fuzz_ptr(uc._uch, size))
     return ptr.raw
 
 def fuzz_consumed():
@@ -286,7 +286,7 @@ def get_global_ticker():
 
 def rem_timer(uc, timer_id):
     global native_lib
-    assert native_lib.rem_timer(uc, timer_id) == 0
+    assert native_lib.rem_timer(uc._uch, timer_id) == 0
 
 def reload_timer(timer_id):
     global native_lib
@@ -294,11 +294,11 @@ def reload_timer(timer_id):
 
 def start_timer(uc, timer_id):
     global native_lib
-    assert native_lib.start_timer(uc, timer_id) == 0
+    assert native_lib.start_timer(uc._uch, timer_id) == 0
 
 def stop_timer(uc, timer_id):
     global native_lib
-    assert native_lib.stop_timer(uc, timer_id) == 0
+    assert native_lib.stop_timer(uc._uch, timer_id) == 0
 
 # uc_hook add_interrupt_trigger(uc_engine *uc, uint64_t addr, uint32_t irq, uint32_t num_skips, uint32_t num_pends, uint32_t do_fuzz);
 def add_interrupt_trigger(uc, addr, irq, num_skips, num_pends, fuzz_mode, trigger_mode, every_nth_tick):
@@ -330,7 +330,7 @@ def init(uc, mmio_regions, exit_at_bbls, exit_at_hit_num, do_print_exit_info, fu
     _setup_prototype(native_lib, "register_cond_py_handler_hook", ctypes.c_int, uc_engine, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int)
     # uc_err remove_function_handler_hook_address(uc_engine * uc, uint64_t address);
     _setup_prototype(native_lib, "remove_function_handler_hook_address", ctypes.c_int, uc_engine, ctypes.c_uint64)
-    # void do_exit(uc_engine *uc, int status, int sig);
+    # void do_exit(uc_engine *uc, uc_err err);
     _setup_prototype(native_lib, "do_exit", ctypes.c_int, uc_engine, ctypes.c_int)
 
     # FUZZING
