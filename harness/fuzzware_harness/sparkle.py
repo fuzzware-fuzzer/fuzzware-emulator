@@ -173,26 +173,41 @@ def break_it(uc):
         ipdb.set_trace()
 
 
-def add_breakpoint(self, addr):
+def add_breakpoint(self, addr, cond=None):
     global breakpoints
+    global breakpoint_conditions
+
     breakpoints.append(addr)
+
+    if cond:
+        breakpoint_conditions[addr] = cond
+
     return breakpoints.index(addr)
 
 
 def del_breakpoint(self, handle):
     global breakpoints
-    if handle in breakpoints:
-        breakpoints[breakpoints.index(handle)] = -1
-    else:
-        breakpoints[handle] = -1
+    global breakpoint_conditions
 
+    bp_ind = handle
+    if bp_ind in breakpoints:
+        bp_ind = breakpoints.index(handle)
+
+    addr = breakpoints[bp_ind]
+    breakpoints[bp_ind] = -1
+
+    if addr in breakpoint_conditions:
+        del breakpoint_conditions[addr]
 
 breakpoints = []
+breakpoint_conditions = {}
 def breakpoint_handler(uc, address, size=0, user_data=None):
     global breakpoints
+    global breakpoint_conditions
     if address in breakpoints:
-        print("[*] Breakpoint hit at %#08x" % address)
-        break_it(uc)
+        if address not in breakpoint_conditions or eval(breakpoint_conditions[address]):
+            print("[*] Breakpoint hit at %#08x" % address)
+            break_it(uc)
     if uc.gdb is not None and not uc.gdb.running.is_set():
         print("[*] Execution interrupted at %#08x" % address)
         break_it(uc)
@@ -208,11 +223,15 @@ def add_sparkles(uc, args):
     uc.del_breakpoint = types.MethodType(del_breakpoint, uc)
     if args.breakpoints:
         for bp in args.breakpoints:
+            if " " in bp:
+                bp, cond = bp.split(" ")
+            else:
+                cond = None
             try:
                 bp_addr = int(bp, 0)
             except ValueError:
                 bp_addr = util.parse_address_value(uc.symbols, bp)
-            breakpoints.append(bp_addr & ~1)
+            uc.add_breakpoint(bp_addr & ~ 1, cond)
         uc.hook_add(unicorn.UC_HOOK_BLOCK_UNCONDITIONAL, breakpoint_handler)
     uc.arch = archinfo.ArchARMCortexM()
     # uc.arch = None
