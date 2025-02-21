@@ -65,7 +65,6 @@ def configure_unicorn(args):
 
     regions = {}
     vtor = globs.NVIC_VTOR_NONE
-    entry_image_base = None
     resolve_region_file_paths(args.config, config)
     resolve_region_base_addrs(config, uc.symbols)
 
@@ -157,20 +156,18 @@ def configure_unicorn(args):
                 uc.mem_write(start + load_offset, region_data)
 
             if region.get('is_entry') == True:
-                vtor = start
+                vtor = start + (region.get('ivt_offset') or 0)
                 logger.debug(f"setting vtor: {vtor:#x}")
 
-                entry_image_base = start + (region.get('ivt_offset') or 0)
-                logger.info(f"Found entry_image_base: 0x{entry_image_base:08x}")
     globs.regions = regions
 
     if not ('entry_point' in config and 'initial_sp' in config):
         # If we don't have explicit configs, try recovering from IVT
-        if entry_image_base is None:
+        if vtor is globs.NVIC_VTOR_NONE:
             logger.error("Binary entry point missing! Make sure 'entry_point is in your configuration")
             sys.exit(1)
-        config['initial_sp'] = bytes2int(uc.mem_read(entry_image_base, 4))
-        config['entry_point'] = bytes2int(uc.mem_read(entry_image_base + 4, 4))
+        config['initial_sp'] = bytes2int(uc.mem_read(vtor, 4))
+        config['entry_point'] = bytes2int(uc.mem_read(vtor + 4, 4))
 
         logger.debug(f"Recovered entry points: {config['entry_point']:08x}, initial_sp: {config['initial_sp']:08x}")
 

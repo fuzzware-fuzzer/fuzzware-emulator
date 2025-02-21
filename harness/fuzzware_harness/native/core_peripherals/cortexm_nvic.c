@@ -1300,8 +1300,8 @@ uc_err init_nvic(uc_engine *uc, uint32_t vtor, uint32_t num_irq, uint32_t p_inte
         printf("[NVIC] Recovered vtor base: %x\n", nvic.vtor); fflush(stdout);
     } else {
         // We have MMIO vtor read fall through, so put vtor value in emulated memory
-        uc_mem_write(uc, SYSCTL_VTOR, &nvic.vtor, sizeof(nvic.vtor));
         nvic.vtor = vtor;
+        uc_mem_write(uc, SYSCTL_VTOR, &nvic.vtor, sizeof(nvic.vtor));
     }
 
     uc_hook_add(uc, &nvic_exception_return_hook_handle, UC_HOOK_BLOCK, nvic_exception_return_hook, NULL, EXCEPT_MAGIC_RET_MASK, EXCEPT_MAGIC_RET_MASK | 0xf);
