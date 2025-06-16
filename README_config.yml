@@ -265,9 +265,6 @@ limits:
   fuzz_consumption_timeout: 150000
   # Maximum number of interrupts to raise before exiting emulation (0: no limit)
   interrupts: 3000
-  # Maximum number of trace events to record before exiting emulation (0: no limit)
-  trace_events: 0
-
 
 #######################################
 # MMIO ACCESS BEHAVIOR CONFIGURATIONS #
@@ -283,7 +280,7 @@ mmio_models:
     pc_00000e98_mmio_4000c014:
       # MMIO address which is accessed
       addr: 0x4000c014
-      # PC address from which the MMIO register is accessed
+      # (optional) PC address from which the MMIO register is accessed
       pc: 0xe98
       # The value to serve
       val: 0x1
@@ -293,7 +290,7 @@ mmio_models:
     pc_000001e2_mmio_0fe081fc:
       # MMIO address which is accessed
       addr: 0xfe081fc
-      # PC address from which the MMIO register is accessed
+      # (optional) PC address from which the MMIO register is accessed
       pc: 0x1e2
       # The amount of fuzzing bytes to read
       size: 0x1
@@ -307,7 +304,7 @@ mmio_models:
     pc_00000a10_mmio_4002c000:
       # MMIO address which is accessed
       addr: 0x4002c000
-      # PC address from which the MMIO register is accessed
+      # (optional) PC address from which the MMIO register is accessed
       pc: 0xa10
       # Initial value for the register to hold (defaults to 0)
       init_val: 0x0
@@ -317,7 +314,7 @@ mmio_models:
     pc_00000b32_mmio_4000c004:
       # MMIO address which is accessed
       addr: 0x4000c004
-      # PC address from which the MMIO register is accessed
+      # (optional) PC address from which the MMIO register is accessed
       pc: 0xb32
       # The set of values for the fuzzer to choose from
       vals:
@@ -329,7 +326,7 @@ mmio_models:
     pc_00000ea4_mmio_4000c000:
       # MMIO address which is accessed
       addr: 0x4000c000
-      # PC address from which the MMIO register is accessed
+      # (optional) PC address from which the MMIO register is accessed
       pc: 0xea4
 
 ################################
@@ -347,6 +344,8 @@ nvic:
   vtor: 0
   # configure the maximum number of vectors in the nvic, defaults to 256
   num_vecs: 256
+  # configure the number of priority bits that are used, defaults to 8 (the full byte), cannot be more than 8
+  num_prio_bits: 8
   # disable certain irq numbers
   disabled_irqs:
   # NOTE: these are external interrupts (16 and higher), i.e., specifying value "12" disables vector entry with index 16+12.

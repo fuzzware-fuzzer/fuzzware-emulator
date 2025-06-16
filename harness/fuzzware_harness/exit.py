@@ -5,14 +5,23 @@ import logging
 logger = logging.getLogger("emulator")
 
 exit_hooks = []
-
+exit_hooks_disabled = False
 
 def add_exit_hook(fn):
+    global exit_hooks_disabled
+    assert not exit_hooks_disabled, "Initialization ran in the wrong order (native init has already been called with no exit hooks)"
+
     exit_hooks.append(fn)
 
 def has_exit_hooks():
     global exit_hooks
-    return len(exit_hooks) != 0
+    global exit_hooks_disabled
+
+    has_hooks = len(exit_hooks) != 0
+    if not has_hooks:
+        exit_hooks_disabled = True
+
+    return has_hooks
 
 def invoke_exit_callbacks(status, kill_signal=-1):
     """

@@ -1,0 +1,327 @@
+# Generic DMA configuration
+# =========================
+
+peripherals:
+  my_dma_periph:
+    class: fuzzware_harness.peripherals.generic_dma.GenericDMAC
+
+    ###############################################
+    ##### MMIO register-based DMA definitions #####
+    ###############################################
+
+    # DMA descriptors which describe buffer locations.
+    descriptors:
+    - # Location
+      addr: 0x40001400        # Initial location. Required for descriptor root objects
+      type: pointer           # (Optional) defaults to 'pointer' for 'descriptors' root objects
+      known_values: # (Optional) known valid locations, treat pointer as invalid if not one of these locations. If not specified, all locations are valid
+      - 0x20001234
+      - 0x20005678
+      to:
+        type: descriptor      # (Optional) defaults to 'descriptor' for non-root objects
+        typedef: my_list_linked_list_element # (Optional) create custom type name for (self/circular) referencing
+        fields:
+        # Pointer to next linked-list object
+        - offset: 0 # (Optional) implied offset 0 for first field
+          # Pointer
+          type: pointer
+          # For further pointer attributes, see root element description
+          to:
+            type: my_list_linked_list_element
+
+        # Fuzzer-controlled metadata
+        - offset: 4
+          type: status
+          size: 4 # Size in bytes of the metadata field. Default: 4
+          mask: 0xffffffff # bitmask of fuzzer-controlled field bits. Default: full field
+
+        # Pointer to buffer
+        - offset: 8 # (Optional) implied by offset and size of previous field
+          type: pointer
+          to:
+            type: buffer
+            # No more fields, the size is retrieved from known_sizes
+
+        # Inline buffer
+        - offset: 0xc # (Optional) implied by offset and size of previous field
+          # TODO: in-line buffer size also taken from known sizes?
+          type: buffer
+
+        # Pointer to end of buffer
+        - offset: 0x10
+          type: pointer
+          # Buffer end pointers will be handled by checking pointer writes for falling into
+          # one of the buffers of known_sizes and locate the actual buffer start that way.
+          is_buf_end_ptr: true
+          to:
+            type: buffer
+            known_sizes:
+              0x20013370:
+                min: 0x20
+                max: 0x20
+
+    # (Optional) List of known buffer locations and sizes that can be referenced by descriptor "pointer" members to buffers
+    #            If not specified, linearly growing buffers are assumed
+    # These can be referenced by individual 'pointer' type fields using the 'known_values' list
+    known_sizes:
+      # Address / Symbol to min/max
+      0x20000400: # alternatively, a symbol can be specified here
+        min: 0x400 # Minimum size
+        max: 0x800 # (Optional) Enable growing the buffer linearly up to the specified size. Default: No buffer growth. 0: Infinite growth
+
+    # (Optional) Refresh trigger parameters: when to fill in new fuzzing contents
+    refresh:
+      # By default, a refresh happens when a byte in the buffer gets re-accessed from the same PC
+
+      # Refresh after reaccesses, either after n reaccesses or time between re-accesses
+      - type: on_reaccess       # Default
+        num_reaccesses: 0       # Number of re-accesses (0: refresh on every access, -1: never on reaccess)
+        timeout_ticks: 0        # Number of ticks since last fresh buffer read (0: no timeout)
+        access_context_regs:    # List of registers to take as context when distinguishing (re-)accesses (default: pc)
+        - pc
+        # - lr
+
+    # (Optional) Refresh trigger parameters: when to fill status descriptor fields with new fuzzing contents
+    status_refresh:
+      # See 'refresh' definition
+      - type: on_reaccess
+
+
+    #########################################################
+    ##### Manual, fixed-location DMA buffer definitions #####
+    #########################################################
+
+    # Fixed-location buffers that are immediately active and filled with fuzzing input. Not needed in case 'descriptors' are specified
+    buffers:
+    - # Known fixed address
+      addr: 0x1234
+      addr: my_symbol
+
+      # Known buffer size
+      # Option 1: Shorthand size notation with fixed size, non-growing buffer
+      size: 0x400
+      # Option 2 (default): initially 1-sized, infinitely growing buffer
+      size: # omitted or empty
+      # Option 3: Range of sizes with linear growth
+      size:
+        min: 0x400 # compatibility alias: 'val'
+        # (Optional) Enable growing the buffer linearly up to the specified size
+        max: 0     # max==0        : Grow indefinitely
+        max: 0x800 # max>min       : Grow up to specified size
+        max: 0x400 # 0 < max <= min: No growth
+    - # ... more buffer definitions
+
+    # Compatibility alias; single entry added to 'buffers' entries; see buffers[0]
+    buffer:
+
+    ##########################################
+    ##### Descriptor definition examples #####
+    ##########################################
+
+    # Example 1: Pointer to simple buffer
+    descriptors:
+    - addr: 0x40003400
+      to:
+        type: buffer
+
+    # Example 2: Descriptor holding two pointers to buffers
+    descriptors:
+    - addr: 0x40004400
+      to:
+        fields:
+        - type: pointer
+          to:
+            type: buffer
+        - type: pointer
+          to:
+            type: buffer
+
+    # Example 3: Descriptor linked list with pointer to buffer
+    descriptors:
+    - addr: 0x40005400
+      to:
+        typedef: my_linked_list_elem
+        fields:
+        - type: pointer
+          to:
+            type: my_linked_list_elem
+        # We assume size metadata of size 4, so pointer is only 3rd element
+        - offset: 8
+          type: pointer
+          to:
+            type: buffer
+
+    # Example 4: Descriptor linked list with inlined buffer
+    descriptors:
+    - addr: 0x40006400
+      to:
+        typedef: my_linked_list_elem_with_inlined_buf
+        fields:
+        - type: pointer
+          to:
+            type: my_linked_list_elem_with_inlined_buf
+        # We assume size metadata of size 4, so pointer is only 3rd element
+        - offset: 8
+          type: buffer
+
+    # Example 11: STM32F103
+    descriptors:
+    - addr: 0x40020014 # and other DMA channels, if used. Offsets: 0x14, 0x28, 0x3c, 0x50, 0x64, 0x78, 0x8c
+      to:
+        type: buffer
+
+    # Example 12: SAM3X
+    descriptors:
+    - addr: 0x400C4100
+      to:
+        type: buffer
+
+    # Example 13: SAM3X (scatter-gather)
+    descriptors:
+    - addr: 0x400C4044 # and other DMA channels, if used. Offsets: 0x6c, 0x94, 0xbc, 0xe4, 0x10c
+      to:
+        # 22.4.4.1 Multi-buffer Transfers
+        typedef: sam3x_ll_elem
+        fields:
+        #    0: DMAC_SADDRx
+        #    4: DMAC_DADDRx
+        - offset: 4
+          type: pointer
+          to:
+            type: buffer
+        #    8: DMAC_CTRLAx
+        # 0x0c: DMAC_CTRLBx
+        # 0x10: DMAC_DSCRx  -> Descriptor Pointer register
+        - offset: 0x10
+          type: pointer
+          to:
+            type: sam3x_ll_elem
+
+    # Example 14.1: LPC1837
+    descriptors:
+    - addr: 0x40002104 # and other DMA channels, if used. Offsets: 0x104 (DESTADDR0), 0x124 (DESTADDR1), ..., 0x1e4 (DESTADDR7)
+      to:
+        type: buffer
+    - addr: 0x40002124 # and other DMA channels, if used. Offsets: 0x104 (DESTADDR0), 0x124 (DESTADDR1), ..., 0x1e4 (DESTADDR7)
+      to:
+        type: buffer
+    - addr: 0x40002144 # and other DMA channels, if used. Offsets: 0x104 (DESTADDR0), 0x124 (DESTADDR1), ..., 0x1e4 (DESTADDR7)
+      to:
+        type: buffer
+    - addr: 0x40002164 # and other DMA channels, if used. Offsets: 0x104 (DESTADDR0), 0x124 (DESTADDR1), ..., 0x1e4 (DESTADDR7)
+      to:
+        type: buffer
+    - addr: 0x40002184 # and other DMA channels, if used. Offsets: 0x104 (DESTADDR0), 0x124 (DESTADDR1), ..., 0x1e4 (DESTADDR7)
+      to:
+        type: buffer
+    - addr: 0x400021a4 # and other DMA channels, if used. Offsets: 0x104 (DESTADDR0), 0x124 (DESTADDR1), ..., 0x1e4 (DESTADDR7)
+      to:
+        type: buffer
+    - addr: 0x400021c4 # and other DMA channels, if used. Offsets: 0x104 (DESTADDR0), 0x124 (DESTADDR1), ..., 0x1e4 (DESTADDR7)
+      to:
+        type: buffer
+    - addr: 0x400021e4 # and other DMA channels, if used. Offsets: 0x104 (DESTADDR0), 0x124 (DESTADDR1), ..., 0x1e4 (DESTADDR7)
+      to:
+        type: buffer
+
+    # Example 14: LPC1837 (scatter-gather)
+    descriptors:
+    - addr: 0x40002108 # and other DMA channels, if used. Offsets: 0x108 (LLI0), 0x128 (LLI1), ..., 0x1e8 (LLI7)
+      to:
+        typedef: LPC18xx_lli
+        # Descriptor size: 0x10
+        fields:
+        # 0: CSRCADDR
+        # 4: CDESTADDR
+        - offset: 4
+          type: pointer
+          to:
+            type: buffer
+        # 8: CLLI
+        - offset: 8
+          type: pointer
+          to:
+            type: LPC18xx_lli
+        # c: CCONTROL
+
+    # Example 15: MK64F
+    descriptors:
+    - addr: 0x40009010 # and other DMA channels, if used. Offsets: 0x10, 0x30, ... (16 Channels)
+      to:
+        type: buffer
+    - addr: 0x40009030
+      to:
+        type: buffer
+
+    # Example 16: MK64F (scatter-gather)
+    descriptors:
+      # The first descriptor is written to MMIO. If we support structs over MMIO memory, we could unify these
+    - addr: 0x40009010 # and other DMA channels, if used. Offsets: 0x10, 0x30, ... (16 Channels)
+      to:
+        type: buffer
+    - addr: 0x40009030
+      to:
+        type: buffer
+
+      # 22.3.32 TCD Last Destination Address Adjustment/Scatter Gather Address (DMA_TCDn_DLASTSGA)
+    - addr: 0x40009018 # and other DMA channels, if used. Offsets: 0x18, 0x38, ..., (16 channels)
+      typedef: MK64F_tcd
+      to:
+        typedef: MK64F_lli
+        # Descriptor size: 0x20
+        fields:
+        - offset: 0x10
+          type: pointer
+          to:
+            type: buffer
+        - offset: 0x18
+          type: pointer
+          to:
+            type: MK64F_lli
+    - addr: 0x40009038
+      type: MK64F_tcd
+
+    # Example 17: NRF52DK Radio
+    descriptors:
+    - addr: 0x40001504 # 23.14.8 PACKETPTR
+      to:
+        type: buffer
+
+    # Example 18: MK64F Ethernet
+    descriptors:
+    - addr: 0x400c0180 # Receive Descriptor Ring Start Register (ENET_RDSR)
+      to:
+        # TODO: enet_rx_bd_struct_t ? uint16_t len, uint16_t control, uint32_t buffer
+        type: descriptor
+        fields:
+        - type: pointer
+          offset: 4
+          to:
+            type: buffer
+        - type: pointer
+          offset: 12
+          to:
+            type: buffer
+
+    # Example 19: PSoC6 DMA
+    descriptors:
+    - addr: 0xdeadbeef #
+      to:
+        # TODO
+        # Descriptor size: up to 0x18 (6 * 4)
+        typedef: psoc_tcd_lli
+        fields:
+        # 0: DESCR_SRC
+        # 4: DESCR_DST
+        - type: pointer
+          offset: 4
+          to:
+            type: buffer
+        # 8: DESCR_CTL
+        # c: TODO: x_size (?)
+        # 0x10: TODO: y_size (?)
+        # 0x14: DESCR_NEXT_PTR
+        - type: pointer
+          offset: 0x14
+          to:
+            type: psoc_tcd_lli

@@ -21,6 +21,6 @@
 // #define NVIC_REGISTER_OFFSET_MASK ((EXCEPTION_NO_MAX / 32)-1)
 #define NVIC_REGISTER_OFFSET_MASK 0x3f
 
-// 0xff
+#define NUM_PRIO_BITS_MAX 8
 
 #endif

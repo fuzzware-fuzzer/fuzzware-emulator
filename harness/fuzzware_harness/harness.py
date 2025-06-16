@@ -4,31 +4,33 @@ import os
 import sys
 import logging
 
-from unicorn import (UC_ARCH_ARM, UC_MODE_MCLASS, UC_MODE_THUMB, Uc)
+from unicorn import (UC_ARCH_ARM, UC_MODE_MCLASS, UC_MODE_THUMB, Uc, UC_PROT_READ, UC_PROT_WRITE, UC_PROT_EXEC)
 from unicorn.arm_const import UC_ARM_REG_PC, UC_ARM_REG_SP
 
 from . import globs, interrupt_triggers, native, timer, user_hooks
 from .gdbserver import GDBServer
 from .mmio_models import parse_mmio_model_config
 from .sparkle import add_sparkles
-from .tracing import snapshot, trace_bbs, trace_ids, trace_mem
-from .user_hooks import (add_block_hook, add_func_hook,
-                         maybe_register_global_block_hook)
+from .tracing import state_dump, trace_bbs, trace_mem
+from .user_hooks import add_uncond_block_hook, add_func_hook
 from .util import (bytes2int, load_config_deep, parse_address_value,
                    parse_symbols, resolve_region_file_paths, closest_symbol,
                    resolve_region_base_addrs)
+
+from .peripherals import parse_peripheral_configs
+
 
 logging.basicConfig(stream=sys.stdout, level=logging.WARNING)
 logger = logging.getLogger("emulator")
 
 def unicorn_trace_syms(uc, pc, size=0, user_data=None):
     if pc in uc.syms_by_addr:
-        print(f"Calling function: {uc.syms_by_addr[pc]}", flush=False, end="")
+        print(f"Calling function: {uc.syms_by_addr[pc][0]}", flush=False, end="")
         lr = uc.regs.lr
         lr_sym = closest_symbol(uc.syms_by_addr, lr)[0]
         if lr_sym:
             print(f" from {lr_sym}", flush=False, end="")
-        print(f" (PC={hex(pc)}, LR={hex(lr)})", flush=True)
+        print(f" (PC: {pc:#x}, LR: {lr:#x})", flush=True)
         sys.stdout.flush()
 
 def configure_unicorn(args):
@@ -50,8 +52,6 @@ def configure_unicorn(args):
             args.interrupt_limit = limits['interrupts']
         if 'fuzz_consumption_timeout' in limits:
             args.fuzz_consumption_timeout = limits['fuzz_consumption_timeout']
-        if 'trace_events' in limits:
-            args.trace_event_limit = limits['trace_events']
 
     # Step 2: Set up the memory map
     if 'memory_map' not in config:
@@ -60,8 +60,11 @@ def configure_unicorn(args):
 
     # Create the unicorn
     uc = Uc(UC_ARCH_ARM, UC_MODE_THUMB | UC_MODE_MCLASS)
-
+    globs.uc = uc
     uc.symbols, uc.syms_by_addr = parse_symbols(config)
+    uc = add_sparkles(uc, args)
+    # Register python basic block callback wrapper. Hooks are added individually via native.add_py_hooked_block_addr
+    native.register_cond_py_handler_hook(uc)
 
     regions = {}
     vtor = globs.NVIC_VTOR_NONE
@@ -91,11 +94,11 @@ def configure_unicorn(args):
             prot = 7 # UC_PROT_ALL
         else:
             if 'r' in region['permissions'].lower():
-                prot |= 1
+                prot |= UC_PROT_READ
             if 'w' in region['permissions'].lower():
-                prot |= 2
+                prot |= UC_PROT_WRITE
             if 'x' in region['permissions'].lower():
-                prot |= 4
+                prot |= UC_PROT_EXEC
 
         # Derive memory region size from backing file
         if 'size' not in region and 'file' in region:
@@ -180,26 +183,32 @@ def configure_unicorn(args):
     if not mmio_ranges:
         logger.error("No mmio region(s) configured. Did you forget to add a 'mmio*' memory_map entry?")
         sys.exit(1)
+    ram_ranges = [(start, start + size) for rname, (start, size, prot) in regions.items() if not rname.lower().startswith('mmio')]
 
     # Stuff which needs to be executed on exit. We need to register those before initializing the native module
     if args.dump_state_filename is not None:
-        snapshot.init_state_snapshotting(uc, args.dump_state_filename, args.dump_mmio_states, mmio_ranges, args.dumped_mmio_contexts, args.dumped_mmio_name_prefix)
+        state_dump.init_state_dumping(uc, args.dump_state_filename, args.dump_mmio_states, mmio_ranges, args.dumped_mmio_contexts, args.dumped_mmio_name_prefix)
         if args.dump_mmio_states:
             if args.bb_trace_file is None:
                 args.bb_trace_file = "/dev/null"
 
-    trace_ids.set_trace_id_limit(args.trace_event_limit)
-    if args.mmio_trace_file is not None:
-        trace_mem.init_mmio_tracing(uc, args.mmio_trace_file, None, mmio_ranges)
+    need_trace_ids = False
+    if args.force_slow_tracing:
+        logger.warning("Using legacy python traces instead of faster, native ones")
+        if args.mmio_trace_file is not None:
+            trace_mem.init_mmio_tracing(uc, args.mmio_trace_file, mmio_ranges)
+            args.mmio_trace_file = None
+            need_trace_ids = True
 
-    if args.ram_trace_file is not None:
-        trace_mem.init_ram_tracing(uc, args.ram_trace_file, config)
+        if args.ram_trace_file is not None:
+            trace_mem.init_ram_tracing(uc, args.ram_trace_file, config)
+            args.ram_trace_file = None
+            need_trace_ids = True
 
-    if args.bb_trace_file is not None:
-        trace_bbs.register_handler(uc, args.bb_trace_file, None, create_dynamic_filenames=args.dynamic_trace_file_revisions)
-
-    if args.bb_set_file or args.mmio_set_file or args.bb_hash_file:
-        native.init_native_tracing(uc, args.bb_set_file, args.bb_hash_file, args.mmio_set_file, mmio_ranges)
+        if args.bb_trace_file is not None:
+            trace_bbs.init_bb_tracing(uc, args.bb_trace_file)
+            args.bb_trace_file = None
+            need_trace_ids = True
 
     if args.exit_at_bbl != globs.EXIT_AT_NONE:
         exit_at_bbls = [parse_address_value(uc.symbols, args.exit_at_bbl)]
@@ -217,6 +226,20 @@ def configure_unicorn(args):
                 exit_at_bbls.append(addr)
     else:
         exit_at_bbls = []
+
+    # Timer Setup
+    global_timer_scale = config['global_timer_scale'] if 'global_timer_scale' in config else 1
+    native.init_timer_hook(uc, global_timer_scale)
+    timer.configure_timers(uc, config)
+
+    dma_tracing_enabled = args.dma_trace_file is not None
+    if dma_tracing_enabled:
+        from .tracing.trace_dma import init_dma_tracing
+        init_dma_tracing(args.dma_trace_file)
+        need_trace_ids = True
+
+    rw_ram_ranges = [(start, start + size) for rname, (start, size, prot) in regions.items() if not rname.lower().startswith('mmio') and (prot & UC_PROT_READ != 0) and (prot & UC_PROT_WRITE != 0) ]
+    parse_peripheral_configs(uc, config, mmio_ranges, rw_ram_ranges, dma_tracing_enabled)
 
     # Step 3: Set the handlers
     if 'handlers' in config and config['handlers']:
@@ -245,18 +268,15 @@ def configure_unicorn(args):
                     logger.info(f"No symbol found for {str(fname)}")
                     continue
 
-            if not 'do_return' in handler_desc:
-                handler_desc['do_return'] = True
-
-            if 'handler' not in handler_desc:
-                handler_desc['handler'] = None
+            handler_desc.setdefault('do_return', True)
+            handler_desc.setdefault('handler', None)
 
             # Actually hook the thing
             logger.info(f"Handling function {str(fname)} at {addr:#10x} with {str(handler_desc['handler'])}")
             add_func_hook(uc, addr, handler_desc['handler'], do_return=handler_desc['do_return'])
 
     # Native mmio fuzzing
-    native.init(uc, mmio_ranges, exit_at_bbls, args.exit_at_hit_num, args.print_exit_info, args.fuzz_consumption_timeout, args.basic_block_limit)
+    native.init(uc, mmio_ranges, exit_at_bbls, args.exit_at_hit_num, args.print_exit_info, args.print_fork_child_output, args.fuzz_consumption_timeout, args.basic_block_limit)
 
     # Timer Setup
     global_timer_scale = config['global_timer_scale'] if 'global_timer_scale' in config else 1
@@ -278,29 +298,27 @@ def configure_unicorn(args):
         systick_reload_val = systick_cfg.get('reload_val', globs.SYSTICK_RELOAD_VAL_NONE)
         native.init_systick(uc, systick_reload_val)
 
-    # At the end register the non-native accumulating block hook if any unconditional hooks have been registered
-    if user_hooks.func_hooks:
-        # In the native version we use a native check wrapper to avoid unconditional python block hooks
-        native.register_cond_py_handler_hook(uc, user_hooks.func_hooks.keys())
-    else:
-        logger.info("No function hooks found. Registering no native basic block hook for that")
-
-    uc = add_sparkles(uc, args)
-
     if args.debug and args.trace_funcs:
-        add_block_hook(unicorn_trace_syms)
+        add_uncond_block_hook(uc, unicorn_trace_syms)
 
+    mock_hardfp = config.get('mock_hardfp', False)
     # Configure nvic. We need to be a bit verbose here as we need to auto-enable the nvic for isr fuzzing
     if use_nvic:
         nvic_cfg = config.get('nvic', {})
         num_vecs = nvic_cfg.get('num_vecs', globs.DEFAULT_NUM_NVIC_VECS)
+        num_prio_bits = nvic_cfg.get('num_prio_bits', globs.DEFAULT_NUM_NVIC_PRIO_BITS)
         disabled_interrupts = nvic_cfg.get('disabled_irqs', ())
-        native.init_nvic(uc, vtor, num_vecs, args.interrupt_limit, disabled_interrupts)
-
-    maybe_register_global_block_hook(uc)
+        native.init_nvic(uc, vtor, num_vecs, num_prio_bits, args.interrupt_limit, disabled_interrupts, mock_hardfp)
+    elif mock_hardfp:
+        logger.error("Configuration is invalid. Enabling mock_hardfp requires use_nvic (or use_systick).")
+        sys.exit(1)
 
     if args.debug and args.trace_memory:
         native.register_native_debug_hooks(uc)
+
+    # Add unconditional trace hooks late so that python and native tracing sees them at the same time
+    if any((need_trace_ids, args.bb_set_file, args.mmio_set_file, args.bb_hash_file, args.bb_trace_file, args.ram_trace_file, args.mmio_trace_file, args.interrupt_trace_file)):
+       native.init_native_tracing(uc, need_trace_ids, args.bb_set_file, args.bb_hash_file, args.mmio_set_file, args.bb_trace_file, args.ram_trace_file, args.mmio_trace_file, args.interrupt_trace_file, mmio_ranges, ram_ranges)
 
     if args.gdb_port != 0:
         from . import gdbserver
@@ -326,6 +344,7 @@ def populate_parser(parser):
     parser.add_argument('-v', '--print-exit-info', default=False, action="store_true", help="Print some information about the exit reason.")
     parser.add_argument('-M', '--trace-memory', default=False, action="store_true", dest='trace_memory', help="Enables memory tracing")
     parser.add_argument('-t', '--trace-funcs', dest='trace_funcs', default=False, action='store_true')
+    parser.add_argument('--print-fork-child-output', default=False, action='store_true', help="Diagnostics: print output of discovery fork child (only interesting in case of early errors)")
 
     # Debugging switches
     parser.add_argument("-b", '--breakpoint', dest='breakpoints', action='append', default=[])
@@ -337,7 +356,6 @@ def populate_parser(parser):
     parser.add_argument('-l', '--translation-block-limit', dest='basic_block_limit', type=int, default=globs.DEFAULT_BASIC_BLOCK_LIMIT, help=f"Maximum number of basic blocks to execute. 0: no limit. Default: {globs.DEFAULT_BASIC_BLOCK_LIMIT:d}")
     parser.add_argument('--fuzz-consumption-timeout', dest='fuzz_consumption_timeout', type=int, default=globs.DEFAULT_FUZZ_CONSUMPTION_TIMEOUT, help=f"Maximum number of basic blocks to execute while no input is read. 0: no limit. Default: {globs.DEFAULT_FUZZ_CONSUMPTION_TIMEOUT:d}")
     parser.add_argument('--interrupt-limit', dest='interrupt_limit', type=int, default=globs.DEFAULT_MAX_INTERRUPTS, help=f"Maximum number of interrupts to raise. 0: no limit. Default: {globs.DEFAULT_MAX_INTERRUPTS:d}")
-    parser.add_argument('--trace-event-limit', dest='trace_event_limit', default=globs.DEFAULT_TRACE_EVENT_LIMIT, type=int, help=f"Exit before the (n+1)th event id would be used. 0: no limit. Default: {globs.DEFAULT_TRACE_EVENT_LIMIT:d}")
     parser.add_argument('--exit-at', dest='exit_at_bbl', default=globs.EXIT_AT_NONE, type=sym_or_addr, help="Exit at the given basic block address.")
     parser.add_argument('--exit-at-hit-num', dest='exit_at_hit_num', type=int, default=1, help="Number of hits of basic block at which to exit. Defaults to 1 (exit on first hit).")
 
@@ -348,7 +366,9 @@ def populate_parser(parser):
     parser.add_argument('--bb-set-out', dest='bb_set_file', default=None, help="Trace (compact) set of visited basic blocks into binary file.")
     parser.add_argument('--mmio-set-out', dest='mmio_set_file', default=None, help="Trace (compact) set of MMIO access contexts into binary file.")
     parser.add_argument('--bb-hash-out', dest='bb_hash_file', default=None, help="Hash together all sequentially visited basic blocks into binary file. This can be used to compare executions.")
-    parser.add_argument('--dynamic-trace-file-revisions', default=False, action="store_true", help="Instead of overriding trace files for basic block traces, create numbered versions. Could be useful for debugging tracing issues.")
+    parser.add_argument('--interrupt-trace-out', dest='interrupt_trace_file', default=None, help="Trace interrupt entries and exits.")
+    parser.add_argument('--dma-trace-out', dest='dma_trace_file', default=None)
+    parser.add_argument('--force-slow-tracing', default=False, action="store_true", help="Force legacy tracing via python instead of natively. Useful to check compatibility between the two.")
 
     # MMIO access state generation
     parser.add_argument('--state-out', dest='dump_state_filename', default=None, help="Destination of output state(s). If all MMIO accesses are to be dumped, pass a directory here.")
@@ -373,13 +393,16 @@ def main():
 
     if args.debug:
         logger.setLevel(logging.DEBUG)
+        logging.getLogger("DMA").setLevel(logging.DEBUG)
+        logging.getLogger("GDMA").setLevel(logging.DEBUG)
+        logging.getLogger("GDMABuf").setLevel(logging.DEBUG)
+        logging.getLogger("SNAP").setLevel(logging.DEBUG)
 
     debug_flags = [args.trace_memory, args.trace_funcs, args.breakpoints, args.gdb_port != 0]
     if any(debug_flags):
         args.debug = True
 
     uc = configure_unicorn(args)
-    globs.uc = uc
 
     logger.info(f"Passing control to native code to start emulation. Running for input file '{args.input_file}'")
     sys.stdout.flush()

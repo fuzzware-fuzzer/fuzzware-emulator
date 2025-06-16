@@ -211,7 +211,7 @@ def init_mmio_read_state_dumping(uc, dump_base_filename, mmio_ranges, mmio_acces
     for start, end in mmio_ranges:
         register_mmio_read_state_dump_handler(uc, start, end)
 
-def init_state_snapshotting(uc, dump_filename, dump_mmio_states, mmio_ranges, mmio_access_pc_address_config="", mmio_state_name_prefix=""):
+def init_state_dumping(uc, dump_filename, dump_mmio_states, mmio_ranges, mmio_access_pc_address_config="", mmio_state_name_prefix=""):
     if dump_mmio_states:
         # We need to dump all states before an MMIO access
         init_mmio_read_state_dumping(uc, dump_filename, mmio_ranges, mmio_access_pc_address_config, mmio_state_name_prefix)

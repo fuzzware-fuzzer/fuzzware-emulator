@@ -23,7 +23,10 @@ def parse_address_value(symbols, value, enforce=True):
         name = value
         offset = 0
     if name in symbols:
-        return symbols[name] + offset
+        addrs = symbols[name]
+        if len(addrs) > 1:
+            logger.warning(f"Symbol '{name}' resolves to {len(addrs)} addresses. Using the first one.")
+        return addrs[0] + offset
     try:
         return int(value, 16)
     except ValueError:
@@ -40,13 +43,17 @@ def parse_symbols(config):
     name_to_addr = {}
     addr_to_name = {}
     # Create the symbol table
-    if 'symbols' in config:
+    syms = config.get('symbols', None)
+    if syms:
         try:
-            addr_to_name = {k&0xFFFFFFFE: v for k, v in config['symbols'].items()}
-            name_to_addr = {v: k&0xFFFFFFFE for k, v in config['symbols'].items()}
+            addr_to_name = {k&0xFFFFFFFE: v if type(v) == list else [v] for k, v in syms.items()}
+            for addr, names in addr_to_name.items():
+                for name in names:
+                    name_to_addr.setdefault(name, []).append(addr)
         except TypeError as e:
             logger.error("Type error while parsing symbols. The symbols configuration was likely mis-formatted. The format is 0xdeadbeef: my_symbol_name. Raising original error.")
             raise e
+
     return name_to_addr, addr_to_name
 
 def closest_symbol(addr_to_name, addr, max_offset=0x1000):
@@ -66,7 +73,7 @@ def closest_symbol(addr_to_name, addr, max_offset=0x1000):
         if i == len(sorted_addrs) - 1 or sorted_addrs[i+1] > addr:
             off = addr - sym_addr
             if 0 <= off <= max_offset:
-                return addr_to_name[sym_addr], off
+                return addr_to_name[sym_addr][0], off
             return (None, None)
     return (None, None)
 
@@ -142,7 +149,7 @@ def resolve_config_includes(config, base_path):
 
             logger.info(f"\tIncluding configuration from {f}")
             with open(f, 'rb') as infile:
-                other_config_snippet = yaml.load(infile, Loader=yaml.FullLoader)
+                other_config_snippet = yaml.load(infile, Loader=yaml.SafeLoader)
             adjust_config_relative_paths(other_config_snippet, f)
             other_config_snippet = resolve_config_includes(other_config_snippet, f)
             _merge_dict(newconfig, other_config_snippet)
@@ -192,7 +199,22 @@ def load_config_deep(path):
     if not os.path.isfile(path):
         return {}
     with open(path, 'rb') as infile:
-        config = yaml.load(infile, Loader=yaml.FullLoader)
+        config = yaml.load(infile, Loader=yaml.CSafeLoader)
     if config is None:
         return {}
     return resolve_config_includes(config, path)
+
+def sign_extended_to_number(value, num_bits):
+    """
+        Converts a sign extended (two's complement) number to a python number. Works on number with arbitrary numbers of bits
+
+        :param val: the value to convert
+        :param num_bits: the relevant number of bits in val, including the sign bit
+    """
+
+    sign_bit = 1 << (num_bits - 1)
+    sign = value & sign_bit
+    mask = sign_bit - 1
+    if sign:
+        return (-(value & mask) & mask) * -1
+    return value

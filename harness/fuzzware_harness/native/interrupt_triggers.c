@@ -1,6 +1,4 @@
 #include "interrupt_triggers.h"
-#include "native_hooks.h"
-#include "core_peripherals/cortexm_nvic.h"
 #include "timer.h"
 #include <string.h>
 
@@ -116,8 +114,22 @@ static void interrupt_trigger_tick_block_hook(uc_engine *uc, uint64_t address, u
 
         // Perform the actual pending
         if(trigger->irq) {
-            nvic_set_pending(uc, trigger->irq, false);
-            ++trigger->curr_pends;
+            int is_allowed = 1;
+
+            if(interrupt_pending_allowed_cb) {
+                is_allowed = interrupt_pending_allowed_cb(trigger->irq);
+
+                #ifdef DEBUG_INTERRUPT_TRIGGERS
+                printf("[interrupt trigger] Asked whether pending interrupt %d is allowed. Result: %d\n", trigger->irq, is_allowed);
+                fflush(stdout);
+                #endif
+            }
+
+            // Ask any possible devices about whether we are allowed to raise the interrupt
+            if(is_allowed) {
+                nvic_set_pending(uc, trigger->irq, false);
+                ++trigger->curr_pends;
+            }
         }
     }
 

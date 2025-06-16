@@ -7,22 +7,39 @@ import logging
 
 from unicorn import UC_HOOK_BLOCK_UNCONDITIONAL
 
-from .. import globs
 from ..exit import do_exit
-
+from ..snapshot import is_snapshot_created
 
 logger = logging.getLogger("emulator")
 
-func_hooks = {}
+bb_hooks_by_addr = {}
 
-def remove_func_hook(address, func):
-    assert (address in func_hooks) and func in func_hooks[address]
-    func_hooks[address].remove(func)
+def can_modify_block_hooks():
+    # Post snapshotting, emulation results become inconsistent
+    return not is_snapshot_created()
+
+def add_bb_hook(uc, addr, func):
+    global bb_hooks_by_addr
+    assert addr & 1 == 0, "Basic block address thumb bit should not be set"
+    assert can_modify_block_hooks(), "Can only add basic block hooks before snapshotting"
+
+    bb_hooks_by_addr.setdefault(addr, []).append(func)
+
+    from ..native import add_py_hooked_block_addr
+    add_py_hooked_block_addr(uc, addr)
+
+    return addr, func
+
+def remove_bb_hook(uc, address, func):
+    assert func in bb_hooks_by_addr.get(address, ())
+    assert can_modify_block_hooks(), "Basic Block hook cannot be deleted after snapshotting"
+
+    bb_hooks_by_addr[address].remove(func)
     # is the address fully gone?
-    if not func_hooks[address]:
-        del func_hooks[address]
+    if not bb_hooks_by_addr[address]:
+        del bb_hooks_by_addr[address]
         from .. import native
-        native.remove_function_handler_hook_address(globs.uc, address)
+        native.remove_py_hooked_block_addr(uc, address)
 
 """ ASM
 ldr r0, =0x90909090
@@ -71,7 +88,10 @@ def add_func_hook(uc, addr, func, do_return=True):
     Makes it faster to not have to call into python for hooks we don't need.
     """
 
+    assert can_modify_block_hooks(), "Can only add function hooks before snapshotting"
+
     real_addr = addr & 0xFFFFFFFE  # Drop the thumb bit
+    func_obj = None
     if func:
         if isinstance(func, str):
             try:
@@ -79,7 +99,7 @@ def add_func_hook(uc, addr, func, do_return=True):
                 mod_name, func_name = func.rsplit('.', 1)
                 if mod_name == "native":
                     patch_native_handler(uc, addr, func_name)
-                    return
+                    return None, None
 
                 mod = importlib.import_module(mod_name)
                 func_obj = getattr(mod, func_name)
@@ -92,37 +112,33 @@ def add_func_hook(uc, addr, func, do_return=True):
         else:
             func_obj = func
 
-        if real_addr not in func_hooks:
-            func_hooks[real_addr] = []
-        func_hooks[real_addr].append(func_obj)
+        real_addr, func_obj = add_bb_hook(uc, real_addr, func_obj)
 
     if do_return:
         uc.mem_write(real_addr, THUMB_RET)
 
+    return real_addr, func_obj
 
 def func_hook_handler(uc, addr, size, user_data):
-    if addr in func_hooks:
-        for hook in func_hooks[addr]:
+    for hook in bb_hooks_by_addr[addr]:
+        if logger.level <= logging.DEBUG:
             logger.debug(f"Calling hook {hook.__name__} at {addr:#08x}")
-            try:
-                hook(uc)
-            except:
-                import traceback
-                traceback.print_exc()
-                do_exit(uc, 1)
+        try:
+            hook(uc)
+        except:
+            import traceback
+            traceback.print_exc()
+            do_exit(uc, 1)
 
-block_hooks = []
+def add_uncond_block_hook(uc, hook):
+    assert can_modify_block_hooks(), "Can only add unconditional block hooks before snapshotting"
 
-def add_block_hook(hook):
-    block_hooks.append(hook)
+    def hook_wrap(uc, address, size=0, user_data=None):
+        try:
+            hook(uc, address, size, user_data)
+        except:
+            import traceback
+            traceback.print_exc()
+            do_exit(uc, 1)
 
-def maybe_register_global_block_hook(uc):
-    if block_hooks:
-        logger.debug("Registering block hook wrapper for {} hooks: {}".format(len(block_hooks), list(map(lambda fn: fn.__name__, block_hooks))))
-        uc.hook_add(UC_HOOK_BLOCK_UNCONDITIONAL, block_hook_handler)
-    else:
-        logger.debug("No non-native unconditional basic block hooks registered, not adding global hook")
-
-def block_hook_handler(uc, address, size=0, user_data=None):
-    for hook in block_hooks:
-        hook(uc, address, size, user_data)
+    uc.hook_add(UC_HOOK_BLOCK_UNCONDITIONAL, hook_wrap)

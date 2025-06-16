@@ -65,16 +65,24 @@ uc_err mem_errors[] = {
 
 // 1. Static (after initialization) configs
 int do_print_exit_info = 0;
+int do_print_fork_child_output = 1;
 
 uc_hook invalid_mem_hook_handle = 0;
+uc_hook invalid_mem_hook_handle_child = 0;
 uc_hook hook_block_cond_py_handlers_handle;
 uc_cb_hookcode_t py_hle_handler_hook = (uc_cb_hookcode_t)0;
-int num_handlers = 0;
-uint64_t *bb_handler_locs = 0;
+void *py_hle_handler_hook_user_data = NULL;
+snapshot_take_handler_t python_snaphot_take_hook;
+snapshot_restore_handler_t python_snaphot_restore_hook;
+snapshot_discard_handler_t python_snaphot_discard_hook;
 uint32_t fuzz_consumption_timer_id;
 uint64_t fuzz_consumption_timeout;
 uint32_t instr_limit_timer_id;
 void *py_default_mmio_user_data = NULL;
+uint32_t num_device_regions;
+uint64_t *device_region_starts;
+uint64_t *device_region_ends;
+devmem_access_cb_t device_region_read_cb;
 uint32_t num_mmio_regions = 0;
 uint64_t *mmio_region_starts = 0;
 uint64_t *mmio_region_ends = 0;
@@ -112,6 +120,12 @@ uc_err custom_exit_reason = UC_ERR_OK;
 
 // Fuzzer coverage bitmap
 uint8_t coverage_bitmap[MAP_SIZE];
+
+struct py_hle_hooked_addr_state py_hle_hooked_addrs = {
+    .num_inuse = 0,
+    .capacity = 0,
+    .addrs = NULL
+};
 
 static void determine_input_mode() {
     char *id_str;
@@ -169,17 +183,13 @@ void hook_debug_mem_access(uc_engine *uc, uc_mem_type type,
         if(type == UC_MEM_WRITE) {
             printf("        >>> Write: addr= 0x%08lx[SP:%c%04lx] size=%d data=0x%08lx (pc 0x%08x)\n", address, sp_offset >= 0 ? '+' : '-', sp_offset >= 0 ? sp_offset : -sp_offset, size, value, pc);
         } else {
-            uint32_t read_value = 0;
-            uc_mem_read(uc, address, &read_value, size);
-            printf("        >>> Read: addr= 0x%08lx[SP:%c%04lx] size=%d data=0x%08x (pc 0x%08x)\n", address, sp_offset >= 0 ? '+' : '-', sp_offset >= 0 ? sp_offset : -sp_offset, size, read_value, pc);
+            printf("        >>> Read: addr= 0x%08lx[SP:%c%04lx] size=%d data=0x%08lx (pc 0x%08x)\n", address, sp_offset >= 0 ? '+' : '-', sp_offset >= 0 ? sp_offset : -sp_offset, size, value, pc);
         }
     } else {
         if(type == UC_MEM_WRITE) {
             printf("        >>> Write: addr= 0x%016lx size=%d data=0x%08lx (pc 0x%08x)\n", address, size, value, pc);
         } else {
-            uint32_t read_value = 0;
-            uc_mem_read(uc, address, &read_value, size);
-            printf("        >>> Read: addr= 0x%016lx size=%d data=0x%08x (pc 0x%08x)\n", address, size, read_value, pc);
+            printf("        >>> Read: addr= 0x%016lx size=%d data=0x%08lx (pc 0x%08x)\n", address, size, value, pc);
         }
     }
     fflush(stdout);
@@ -190,22 +200,24 @@ uc_err add_debug_hooks(uc_engine *uc) {
     uc_err res = UC_ERR_OK;
     // Register unconditional hook for checking for handler presence
     res |= uc_hook_add(uc, &tmp, UC_HOOK_BLOCK_UNCONDITIONAL, hook_block_debug, NULL, 1, 0);
-    res |= uc_hook_add(uc, &tmp, UC_HOOK_MEM_WRITE | UC_HOOK_MEM_READ, hook_debug_mem_access, 0, 1, 0);
+    res |= uc_hook_add(uc, &tmp, UC_HOOK_MEM_WRITE | UC_HOOK_MEM_READ_AFTER, hook_debug_mem_access, 0, 1, 0);
+    do_print_nvic_log = true;
     return res;
 }
 
 bool hook_debug_mem_invalid_access(uc_engine *uc, uc_mem_type type,
         uint64_t address, int size, int64_t value, void *user_data) {
     uint64_t pc = 0;
+    FILE *f = (FILE *)user_data;
     uc_reg_read(uc, UC_ARM_REG_PC, &pc);
     if(type == UC_MEM_WRITE_UNMAPPED || type == UC_MEM_WRITE_PROT) {
-        printf("        >>> [ 0x%08lx ] INVALID Write: addr= 0x%016lx size=%d data=0x%016lx\n", pc, address, size, value);
+        fprintf(f, "        >>> [ 0x%08lx ] INVALID Write: addr= 0x%016lx size=%d data=0x%016lx\n", pc, address, size, value);
     } else if (type == UC_MEM_READ_UNMAPPED || type == UC_MEM_READ_PROT){
-        printf("        >>> [ 0x%08lx ] INVALID READ: addr= 0x%016lx size=%d data=0x%016lx\n", pc, address, size, value);
+        fprintf(f, "        >>> [ 0x%08lx ] INVALID READ: addr= 0x%016lx size=%d data=0x%016lx\n", pc, address, size, value);
     } else if (type == UC_MEM_FETCH_UNMAPPED || type == UC_MEM_FETCH_PROT) {
-        printf("        >>> [ 0x%08lx ] INVALID FETCH: addr= 0x%016lx\n", pc, address);
+        fprintf(f, "        >>> [ 0x%08lx ] INVALID FETCH: addr= 0x%016lx\n", pc, address);
     }
-    fflush(stdout);
+    fflush(f);
     return false;
 }
 
@@ -288,11 +300,18 @@ bool get_fuzz(uc_engine *uc, uint8_t *buf, uint32_t size) {
         }
         _exit(0);
     } else if (!input_already_given) {
+        #ifdef DEBUG
+        printf("[NATIVE FUZZ] No input loaded, yet. Loading delayed\n"); fflush(stdout);
+        #endif
         // Load file-based input now
         load_delayed_input(uc);
 
         return get_fuzz(uc, buf, size);
     } else {
+        #ifdef DEBUG
+        printf("[NATIVE FUZZ] Input fully consumed. Exiting...\n"); fflush(stdout);
+        #endif
+
         if(do_print_exit_info) {
             puts("\n>>> Ran out of fuzz\n");
         }
@@ -308,7 +327,7 @@ uint32_t fuzz_consumed() {
 
 uint8_t *get_fuzz_ptr(uc_engine *uc, uint32_t size) {
     #ifdef DEBUG
-    printf("[NATIVE FUZZ] Requiring %d fuzz bytes\n", size); fflush(stdout);
+    printf("[NATIVE FUZZ ptr] Requiring %d fuzz bytes\n", size); fflush(stdout);
     #endif
 
     // Deal with handing out pointer to fuzzing bytes
@@ -365,6 +384,26 @@ void hook_mmio_access(uc_engine *uc, uc_mem_type type,
 
     uc_reg_read(uc, UC_ARM_REG_PC, &pc);
 
+    // look up device regions and call callback
+    for (int i = 0; i < num_device_regions; ++i) {
+        if(addr >= device_region_starts[i] && addr < device_region_ends[i]) {
+            enum mmio_handle_res_t handled_status = device_region_read_cb(i, addr, size);
+
+            // The handler decided whether it handled everything or we need MMIO models to handle the access
+            if(handled_status == IS_HANDLED) {
+                #ifdef DEBUG
+                printf("[hook_mmio_access] access to %08lx handled by hw device, returning\n", addr); fflush(stdout);
+                #endif
+                goto out;
+            } else {
+                #ifdef DEBUG
+                printf("[hook_mmio_access] access to %08lx passed through by hw device, forwarding to MMIO models\n", addr); fflush(stdout);
+                #endif
+                break;
+            }
+        }
+    }
+
     // TODO: optimize this lookup
     for (int i = 0; i < num_ignored_addresses; ++i)
     {
@@ -399,7 +438,7 @@ void hook_mmio_access(uc_engine *uc, uc_mem_type type,
         return;
     }
     #ifdef DEBUG
-    printf(", value: 0x%lx\n", val); fflush(stdout);
+    printf("Got fuzz value: 0x%lx\n", val); fflush(stdout);
     #endif
     uc_mem_write(uc, addr, (uint8_t *)&val, size);
 
@@ -428,69 +467,109 @@ uc_err add_mmio_region(uc_engine *uc, uint64_t begin, uint64_t end) {
     return uc_hook_add(uc, &tmp, UC_HOOK_MEM_READ, hook_mmio_access, py_default_mmio_user_data, begin, end);
 }
 
-void hook_block_cond_py_handlers(uc_engine *uc, uint64_t address, uint32_t size, void *user_data) {
+static void hook_block_cond_py_handlers(uc_engine *uc, uint64_t address, uint32_t size, void *user_data) {
     uint64_t next_val;
 
     // Search for address in value list and invoke python handler if found
-    for (int i = 0; i < num_handlers; ++i) {
-        next_val = bb_handler_locs[i];
-        if (next_val > address) {
-            break;
-        } else if(next_val == address) {
+    for (int i = 0; i < py_hle_hooked_addrs.num_inuse; ++i) {
+        next_val = py_hle_hooked_addrs.addrs[i];
+        if(next_val == address) {
             py_hle_handler_hook(uc, address, size, user_data);
         }
     }
 }
 
-uc_err register_cond_py_handler_hook(uc_engine *uc, uc_cb_hookcode_t py_mmio_callback, uint64_t *addrs, int num_addrs, void *user_data) {
-    py_hle_handler_hook = py_mmio_callback;
-    num_handlers = num_addrs;
-
-    bb_handler_locs = malloc(num_addrs * sizeof(uint64_t));
-    if(!bb_handler_locs) {
-        perror("allocating handler location struct failed\n");
-        return -1;
+static int find_handler_address_ind(uint64_t address) {
+    for (int i = 0; i < py_hle_hooked_addrs.num_inuse ; i++)	{
+		if (py_hle_hooked_addrs.addrs[i] == address) {
+            return i;
+        }
     }
-
-    memcpy(bb_handler_locs, addrs, num_addrs * sizeof(uint64_t));
-
-    // shouldn't be many entries, just sort ascending this way
-    for (int i = 0; i < num_addrs; i++)
-	{
-		for (int j = 0; j < num_addrs; j++)
-		{
-			if (bb_handler_locs[j] > bb_handler_locs[i])
-			{
-				uint64_t tmp = bb_handler_locs[i];
-			    bb_handler_locs[i] = bb_handler_locs[j];
-				bb_handler_locs[j] = tmp;
-			}
-		}
-	}
-
-    // Register unconditional hook for checking for handler presence
-    return uc_hook_add(uc, &hook_block_cond_py_handlers_handle, UC_HOOK_BLOCK_UNCONDITIONAL, hook_block_cond_py_handlers, user_data, 1, 0);
+    return -1;
 }
 
-uc_err remove_function_handler_hook_address(uc_engine *uc, uint64_t address) {
-    for (int i = 0; i < num_handlers ; i++)	{
-		if (bb_handler_locs[i] == address) {
-            // Found the handler location, now move everything else to the front
-            for(int j = i; j < num_handlers-1; ++j) {
-                bb_handler_locs[j] = bb_handler_locs[j+1];
-            }
-
-            --num_handlers;
-            // Now fully remove the (unconditional) hook if we can
-            if(!num_handlers) {
-                uc_hook_del(uc, hook_block_cond_py_handlers_handle);
-            }
-            return UC_ERR_OK;
+#define NUM_INIT_BB_ADDR_SLOTS 16
+uc_err add_py_hooked_block_addr(uc_engine *uc, uint64_t address) {
+    // Full, make more space
+    if(py_hle_hooked_addrs.num_inuse >= py_hle_hooked_addrs.capacity) {
+        if(py_hle_hooked_addrs.capacity == 0) {
+            py_hle_hooked_addrs.capacity = NUM_INIT_BB_ADDR_SLOTS;
+            py_hle_hooked_addrs.addrs = calloc(py_hle_hooked_addrs.capacity, sizeof(*py_hle_hooked_addrs.addrs));
+        } else {
+            py_hle_hooked_addrs.capacity *= 2;
+            py_hle_hooked_addrs.addrs = realloc(py_hle_hooked_addrs.addrs, py_hle_hooked_addrs.capacity * sizeof(*py_hle_hooked_addrs.addrs));
         }
     }
 
-    perror("[NATIVE ERROR] remove_function_handler_hook_address: could not find address to be removed\n");
-    exit(-1);
+    // We are adding the first address, register native wrapper hook
+    if(py_hle_hooked_addrs.num_inuse == 0) {
+        printf("[Native Python Block Hook Wrapper] Adding unconditional block hook for addr %#lx\n", address); fflush(stdout);
+        assert(py_hle_handler_hook_user_data);
+        if(uc_hook_add(uc, &hook_block_cond_py_handlers_handle, UC_HOOK_BLOCK_UNCONDITIONAL, hook_block_cond_py_handlers, py_hle_handler_hook_user_data, 1, 0)) {
+            perror("ERROR. Could not add native unconditional hook for python single-address block hooks.");
+            exit(-1);
+        }
+    }
+
+    int existing_ind = find_handler_address_ind(address);
+    if(existing_ind >= 0) {
+        return UC_ERR_OK;
+    }
+
+    py_hle_hooked_addrs.addrs[py_hle_hooked_addrs.num_inuse] = address;
+    py_hle_hooked_addrs.num_inuse += 1;
+
+    return UC_ERR_OK;
+}
+
+uc_err remove_py_hooked_block_addr(uc_engine *uc, uint64_t address) {
+    int ind = find_handler_address_ind(address);
+    if(ind < 0) {
+        perror("[NATIVE ERROR] remove_py_hooked_block_addr: could not find address to be removed\n");
+        exit(-1);
+    }
+
+    // delete the address and move the remaining entries to the front
+    memmove(&py_hle_hooked_addrs.addrs[ind], &py_hle_hooked_addrs.addrs[ind+1], (py_hle_hooked_addrs.num_inuse-(ind+1)) * sizeof(*py_hle_hooked_addrs.addrs));
+    --py_hle_hooked_addrs.num_inuse;
+
+    // Now fully remove the (unconditional) hook if we can
+    if(!py_hle_hooked_addrs.num_inuse) {
+        return uc_hook_del(uc, hook_block_cond_py_handlers_handle);
+    }
+
+    return UC_ERR_OK;
+}
+
+uc_err register_cond_py_handler_hook(uc_engine *uc, uc_cb_hookcode_t py_block_callback, void *user_data) {
+    py_hle_handler_hook = py_block_callback;
+    py_hle_handler_hook_user_data = user_data;
+
+    return UC_ERR_OK;
+}
+
+uc_err register_py_handled_device_regions(devmem_access_cb_t py_mmio_callback, uint64_t *starts, uint64_t *ends, int num_regions) {
+    assert(sizeof(*device_region_starts) == sizeof(*starts));
+    assert(sizeof(*device_region_ends) == sizeof(*ends));
+
+    printf("[native.c register_py_handled_device_regions] registering %d device regions.\n", num_regions);
+    for(int i=0; i < num_regions; ++i) {
+        printf("starts[%d]=0x%08lx, ends[%d]=0x%08lx\n", i, starts[i], i, ends[i]);
+    }
+    fflush(stdout);
+
+    num_device_regions = num_regions;
+    device_region_read_cb = py_mmio_callback;
+
+    if(num_regions) {
+        device_region_starts = calloc(num_regions, sizeof(*device_region_starts));
+        device_region_ends = calloc(num_regions, sizeof(*device_region_ends));
+        assert(device_region_starts != NULL && device_region_ends != NULL);
+        memcpy(device_region_starts, starts, num_regions * sizeof(*device_region_starts));
+        memcpy(device_region_ends, ends, num_regions * sizeof(*device_region_ends));
+    }
+
+    return UC_ERR_OK;
 }
 
 uc_err register_py_handled_mmio_ranges(uc_engine *uc, uc_cb_hookmem_t py_mmio_callback, uint64_t *starts, uint64_t *ends, int num_ranges) {
@@ -752,7 +831,7 @@ uc_err load_fuzz(const char *path) {
     rewind(fp);
 
     #ifdef DEBUG
-    printf("leftover_size = %ld, fuzz_size = %ld (path: %s)\n", leftover_size, fuzz_size, path);
+    printf("leftover_size = %ld, fuzz_size = %ld (path: %s)\n", leftover_size, fuzz_size, path);fflush(stdout);
     #endif
 
     if (fuzz_size > PREALLOCED_FUZZ_BUF_SIZE) {
@@ -765,7 +844,7 @@ uc_err load_fuzz(const char *path) {
         }
 
         #ifdef DEBUG
-        printf("Allocated new oversized fuzz buffer of size 0x%lx\n", fuzz_size);
+        printf("Allocated new oversized fuzz buffer of size 0x%lx\n", fuzz_size);fflush(stdout);
         #endif
     }
 
@@ -941,7 +1020,43 @@ void mmio_models_discard_snapshot(uc_engine *uc, void *snapshot) {
     free(snapshot);
 }
 
-uc_err init(uc_engine *uc, exit_hook_t p_exit_hook, int p_num_mmio_regions, uint64_t *p_mmio_starts, uint64_t *p_mmio_ends, void *p_py_default_mmio_user_data, uint32_t num_exit_at_bbls, uint64_t *exit_at_bbls, uint32_t p_exit_at_hit_limit, int p_do_print_exit_info, uint64_t p_fuzz_consumption_timeout, uint64_t p_instr_limit) {
+static void *take_py_peripheral_snapshot(uc_engine *uc) {
+    return python_snaphot_take_hook(uc);
+}
+
+static void restore_py_peripheral_snapshot(uc_engine *uc, void *snapshot) {
+    python_snaphot_restore_hook(uc, snapshot);
+}
+
+static void discard_py_peripheral_snapshot(uc_engine *uc, void *snapshot) {
+    python_snaphot_discard_hook(uc, snapshot);
+}
+
+static void *cond_py_handler_hook_take_snapshot(uc_engine *uc) {
+    struct py_hle_hooked_addr_state *snapshot = malloc(sizeof(*snapshot));
+    snapshot->num_inuse = snapshot->capacity = py_hle_hooked_addrs.num_inuse;
+    size_t addr_buf_size = snapshot->num_inuse * sizeof(*snapshot->addrs);
+    snapshot->addrs = malloc(addr_buf_size);
+    memcpy(snapshot->addrs, py_hle_hooked_addrs.addrs, addr_buf_size);
+    return snapshot;
+}
+
+static void cond_py_handler_hook_restore_snapshot(uc_engine *uc, void *snapshot) {
+    // As an optimization, we always re-use the current global buffer
+    // We can do this as the buffer will only ever grow
+    // Note: Due to the optimization, we do not set the capacity here
+    struct py_hle_hooked_addr_state *state = (struct py_hle_hooked_addr_state *) snapshot;
+    py_hle_hooked_addrs.num_inuse = state->num_inuse;
+    memcpy(py_hle_hooked_addrs.addrs, state->addrs, state->num_inuse * sizeof(*state->addrs));
+}
+
+static void cond_py_handler_hook_discard_snapshot(uc_engine *uc, void *snapshot) {
+    struct py_hle_hooked_addr_state *state = (struct py_hle_hooked_addr_state *) snapshot;
+    free(state->addrs);
+    free(state);
+}
+
+uc_err init(uc_engine *uc, exit_hook_t p_exit_hook, int p_num_mmio_regions, uint64_t *p_mmio_starts, uint64_t *p_mmio_ends, void *p_py_default_mmio_user_data, uint32_t num_exit_at_bbls, uint64_t *exit_at_bbls, uint32_t p_exit_at_hit_limit, int p_do_print_exit_info, int p_do_print_fork_child_output, uint64_t p_fuzz_consumption_timeout, uint64_t p_instr_limit, snapshot_take_handler_t py_snapshot_take_handler, snapshot_restore_handler_t py_snapshot_restore_handler, snapshot_discard_handler_t py_snapshot_discard_handler) {
     // TODO: assumes shared endianness
     uc_mem_write(uc, CPUID_ADDR, &CPUID_CORTEX_M4, sizeof(CPUID_CORTEX_M4));
 
@@ -951,9 +1066,10 @@ uc_err init(uc_engine *uc, exit_hook_t p_exit_hook, int p_num_mmio_regions, uint
 
     exit_at_hit_limit = p_exit_at_hit_limit;
     do_print_exit_info = p_do_print_exit_info;
+    do_print_fork_child_output = p_do_print_fork_child_output;
 
     if(do_print_exit_info) {
-        uc_hook_add(uc, &invalid_mem_hook_handle, UC_HOOK_MEM_WRITE_INVALID | UC_HOOK_MEM_READ_INVALID | UC_HOOK_MEM_FETCH_INVALID, hook_debug_mem_invalid_access, 0, 1, 0);
+        uc_hook_add(uc, &invalid_mem_hook_handle, UC_HOOK_MEM_WRITE_INVALID | UC_HOOK_MEM_READ_INVALID | UC_HOOK_MEM_FETCH_INVALID, hook_debug_mem_invalid_access, stdout, 1, 0);
     }
 
     // Add fuzz consumption timeout as timer
@@ -1013,6 +1129,19 @@ uc_err init(uc_engine *uc, exit_hook_t p_exit_hook, int p_num_mmio_regions, uint
 
     subscribe_state_snapshotting(uc, mmio_models_take_snapshot, mmio_models_restore_snapshot, mmio_models_discard_snapshot);
 
+    if(py_snapshot_take_handler && py_snapshot_restore_handler && py_snapshot_discard_handler) {
+        printf("[native_hooks init] subscribing for python peripheral snapshotting\n"); fflush(stdout);
+        python_snaphot_take_hook = py_snapshot_take_handler;
+        python_snaphot_restore_hook = py_snapshot_restore_handler;
+        python_snaphot_discard_hook = py_snapshot_discard_handler;
+
+        subscribe_state_snapshotting(uc, take_py_peripheral_snapshot, restore_py_peripheral_snapshot, discard_py_peripheral_snapshot);
+    }
+
+    // Snapshotting: Python basic block hook state
+    // Perf: If this turns out to be costly in terms of performance, we can simply not do snapshot restoration and not allow modifications after snapshotting
+    subscribe_state_snapshotting(uc, cond_py_handler_hook_take_snapshot, cond_py_handler_hook_restore_snapshot, cond_py_handler_hook_discard_snapshot);
+
     return UC_ERR_OK;
 }
 
@@ -1021,7 +1150,10 @@ static void restore_snapshot(uc_engine *uc) {
     trigger_restore(uc);
 
     // Also reset fuzzing input cursor and exit detection
-    fuzz_cursor = fuzz_size;
+    fuzz_cursor = fuzz_size = 0;
+    latest_mmio_fuzz_access_index = 0;
+    latest_mmio_fuzz_access_size = 0;
+
     input_already_given = 0;
     duplicate_exit = false;
     custom_exit_reason = UC_ERR_OK;
@@ -1067,11 +1199,13 @@ uc_err emulate(uc_engine *uc, char *p_input_path, char *prefix_input_path) {
     }
 
     // For every run (and to keep consistency between single and fuzzing runs), find out how many basic blocks we can execute before hitting the first MMIO read
+    puts("Starting discovery fork child...");fflush(stdout);
     child_pid = fork();
     if(child_pid) {
         // parent: wait for the discovery child to report back the number of tbs we need to execute
         if(read(pipe_to_parent[0], &required_ticks, sizeof(required_ticks)) != sizeof(required_ticks)) {
-            puts("[ERROR] Could not retrieve the number of required ticks during discovery forking");
+            puts("\n[ERROR] [DISCOVERY FORK PARENT] Could not retrieve the number of required ticks during discovery forking. The firmware likely crashed due to an incomplete configuration.\n");
+            puts("TIP: Run the emulator with child output and more verbosity using the following arguments: --print-fork-child-output -t -M\n");
             exit(-1);
         }
         waitpid(child_pid, &child_pid, 0);
@@ -1095,14 +1229,37 @@ uc_err emulate(uc_engine *uc, char *p_input_path, char *prefix_input_path) {
     } else {
         // child: Run until we hit an input consumption
         is_discovery_child = 1;
+
+        // For early config debugging purposes, provide info on invalid memory accesses for child
+        uc_hook_add(uc, &invalid_mem_hook_handle_child, UC_HOOK_MEM_WRITE_INVALID | UC_HOOK_MEM_READ_INVALID | UC_HOOK_MEM_FETCH_INVALID, hook_debug_mem_invalid_access, stderr, 1, 0);
+
+        // To avoid confusing duplicate output, close stdout and redirect to /dev/null
+        if(!do_print_fork_child_output) {
+            FILE *null_file = fopen("/dev/null", "w");
+            if(null_file == NULL) {
+                fprintf(stderr, "[Discovery Child] [ERROR] Could not open /dev/null to suppress discovery child fork output.\n");
+                _exit(-1);
+            }
+            close(STDOUT_FILENO);
+            dup2(fileno(null_file), STDOUT_FILENO);
+            fclose(null_file);
+        }
+
         uc_err child_emu_status = uc_emu_start(uc, pc | 1, 0, 0, 0);
 
         // We do not expect to get here. The child should exit by itself in get_fuzz
-        printf("[ERROR] Emulation stopped using just the prefix input (%d: %s)\n", child_emu_status, uc_strerror(child_emu_status));
+        if(fuzz_cursor == 0) {
+            fprintf(stderr, "[Discovery Child] [ERROR] Emulation stopped without reading any input. The configuration is likely incomplete. Error: %d: %s\n\n", child_emu_status, uc_strerror(child_emu_status));
+        } else {
+            fprintf(stderr, "[Discovery Child] [ERROR] Emulation stopped using just the prefix input (%d: %s)\n\n", child_emu_status, uc_strerror(child_emu_status));
+        }
+
+        print_state_to_file(uc, stderr);
+        fflush(stderr);
 
         // Write wrong amount of data to notify parent of failure
         if(write(pipe_to_parent[1], emulate, 1) != 1) {
-            puts("[Discovery Child] Error: Could not notify parent of failure..."); fflush(stdout);
+            fprintf(stderr, "[Discovery Child] [Error] Could not notify parent of failure...\n"); fflush(stderr);
         }
         _exit(-1);
     }
@@ -1139,10 +1296,10 @@ uc_err emulate(uc_engine *uc, char *p_input_path, char *prefix_input_path) {
             if(read(FORKSRV_FD, &tmp, 4) != 4) {
                 if(count == 1) {
                     puts("[FORKSERVER MAIN LOOP] ERROR: Read from FORKSRV_FD to start new execution failed. Exiting");
-                    exit(-1);
+                    return UC_ERR_EXCEPTION;
                 } else {
                     puts("[FORKSERVER MAIN LOOP] Forkserver pipe now closed. Exiting");
-                    exit(0);
+                    return UC_ERR_OK;
                 }
             }
 
@@ -1151,14 +1308,14 @@ uc_err emulate(uc_engine *uc, char *p_input_path, char *prefix_input_path) {
             /* Send AFL the child pid thus it can kill it on timeout   */
             if(write(FORKSRV_FD + 1, &child_pid, 4) != 4) {
                 printf("[FORKSERVER MAIN LOOP] ERROR: Write to FORKSRV_FD+1 to send fake child PID failed. errno: %d. Description: '%s'. Count: %d\n", errno, strerror(errno), count); fflush(stdout);
-                exit(-1);
+                return UC_ERR_EXCEPTION;
             }
 
             sig = run_single(uc);
 
             if(write(FORKSRV_FD + 1, &sig, 4) != 4) {
                 puts("[MAIN LOOP] Write to FORKSRV_FD+1 to send status failed");
-                _exit(-1);
+                return UC_ERR_EXCEPTION;
             }
 
             restore_snapshot(uc);

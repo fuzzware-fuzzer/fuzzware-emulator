@@ -18,39 +18,73 @@ uint32_t EXCEPT_MAGIC_RET_MASK = 0xfffffff0;
 #define NVIC_VTOR_NONE 0xffffffff
 #define NVIC_NONE_ACTIVE 0
 
-#define FRAME_SIZE 0x20
+#define NUM_SAVED_REGS 8
 
 const uint8_t nvic_id[] = {
     0x00, 0xb0, 0x1b, 0x00, 0x0d, 0xe0, 0x05, 0xb1
 };
-#define NUM_SAVED_REGS 9
+
 static int saved_reg_ids[NUM_SAVED_REGS] = {
     UC_ARM_REG_R0, UC_ARM_REG_R1, UC_ARM_REG_R2, UC_ARM_REG_R3,
-    UC_ARM_REG_R12, UC_ARM_REG_LR, UC_ARM_REG_PC, UC_ARM_REG_XPSR,
-    UC_ARM_REG_SP
+    UC_ARM_REG_R12, UC_ARM_REG_LR, UC_ARM_REG_PC, UC_ARM_REG_XPSR
+};
+
+#define NUM_SAVED_HARDFP_REGS 17
+static int saved_hardfp_reg_ids[NUM_SAVED_HARDFP_REGS] = {
+    UC_ARM_REG_S0, UC_ARM_REG_S1, UC_ARM_REG_S2, UC_ARM_REG_S3,
+    UC_ARM_REG_S4, UC_ARM_REG_S5, UC_ARM_REG_S6, UC_ARM_REG_S7,
+    UC_ARM_REG_S8, UC_ARM_REG_S9, UC_ARM_REG_S10, UC_ARM_REG_S11,
+    UC_ARM_REG_S12, UC_ARM_REG_S13, UC_ARM_REG_S14, UC_ARM_REG_S15,
+    UC_ARM_REG_FPSCR
 };
 
 // 1. Static (after initialization) configs
 uc_hook nvic_block_hook_handle = -1, nvic_exception_return_hook_handle=-1,
     hook_mmio_write_handle = -1, hook_mmio_read_handle = -1, hook_svc_handle = -1;
 uint32_t *reg_curr_sp_mode_is_psp_ptr = NULL;   // UC_ARM_REG_CURR_SP_MODE_IS_PSP
-uint8_t num_prio_bits = 8;
+uint8_t prio_mask = 0xff; // Default value for 8 prio bits
 uint32_t interrupt_limit = 0;
 uint32_t num_config_disabled_interrupts = 0;
 uint32_t *config_disabled_interrupts = NULL;
 uint32_t intlinesnum = INTLINESNUM;
+int do_print_nvic_log = false; // This is set externally by debug log enabling
+bool enable_hardfp = false;
+
+interrupt_pending_allowed_cb_t interrupt_pending_allowed_cb;
+interrupt_entry_cb_t interrupt_entry_cb;
+interrupt_exit_cb_t interrupt_exit_cb;
 
 // 2. Transient variables (not required to be included in state restore)
 static struct {
-    uint32_t r0, r1, r2, r3, r12, lr, pc_retaddr, xpsr_retspr, sp;
+    uint32_t r0, r1, r2, r3, r12, lr, pc_retaddr, xpsr_retspr;
 } saved_regs;
+#define BASIC_FRAME_SIZE (NUM_SAVED_REGS * sizeof(uint32_t))
+
+static struct {
+    uint32_t s0, s1, s2, s3, s4, s5, s6, s7, s8, s9, s10, s11, s12, s13, s14, s15, fpscr, RESERVED;
+} saved_hardfp_regs;
+#define EXTENDED_FRAME_SIZE ((NUM_SAVED_HARDFP_REGS + 1) * sizeof(uint32_t))
+
 static uint32_t *saved_reg_ptrs[NUM_SAVED_REGS] = {
     &saved_regs.r0,
     &saved_regs.r1, &saved_regs.r2,
     &saved_regs.r3, &saved_regs.r12,
     &saved_regs.lr, &saved_regs.pc_retaddr,
-    &saved_regs.xpsr_retspr, &saved_regs.sp
+    &saved_regs.xpsr_retspr
 };
+
+static uint32_t *saved_hardfp_reg_ptrs[NUM_SAVED_HARDFP_REGS + 1] = {
+    &saved_hardfp_regs.s0, &saved_hardfp_regs.s1,
+    &saved_hardfp_regs.s2, &saved_hardfp_regs.s3,
+    &saved_hardfp_regs.s4, &saved_hardfp_regs.s5,
+    &saved_hardfp_regs.s6, &saved_hardfp_regs.s7,
+    &saved_hardfp_regs.s8, &saved_hardfp_regs.s9,
+    &saved_hardfp_regs.s10, &saved_hardfp_regs.s11,
+    &saved_hardfp_regs.s12, &saved_hardfp_regs.s13,
+    &saved_hardfp_regs.s14, &saved_hardfp_regs.s15,
+    &saved_hardfp_regs.fpscr, &saved_hardfp_regs.RESERVED
+};
+
 
 // 3. Dynamic State (required for state restore)
 struct CortexmNVIC nvic __attribute__ ((aligned (64))) = {
@@ -79,6 +113,12 @@ static inline int32_t GET_BASEPRI_NVIC(struct CortexmNVIC *p_nvic) {
 
 static inline uint32_t GET_CURR_SP_MODE_IS_PSP () {
     return *reg_curr_sp_mode_is_psp_ptr;
+}
+
+static inline bool IS_HARDFP_ENABLED(uc_engine *uc) {
+    uint32_t fpexc;
+    uc_reg_read(uc, UC_ARM_REG_FPEXC, &fpexc);
+    return (fpexc & 0x40000000) == 0x40000000;
 }
 
 #define is_exception_ret(pc) ((pc & EXCEPT_MAGIC_RET_MASK) == EXCEPT_MAGIC_RET_MASK)
@@ -403,6 +443,7 @@ static bool set_prio(int to_be_prio_changed, int new_prio) {
     /*
      * Set priority and return whether an nvic prio recalc is required.
      */
+    new_prio &= prio_mask;
 
     if(new_prio != nvic.ExceptionPriority[to_be_prio_changed] && !is_disabled_by_config(to_be_prio_changed)) {
         #ifdef DEBUG_NVIC
@@ -512,7 +553,7 @@ void hook_nvic_mmio_write(uc_engine *uc, uc_mem_type type,
 
             if(base_ind <= NVIC_NUM_SUPPORTED_INTERRUPTS - 4) {
                 for(int i = 0; i < size; ++i) {
-                    uint8_t new_prio = value & 0xff;
+                    uint8_t new_prio = value;
                     uint8_t to_be_prio_changed = base_ind + i;
 
                     need_update |= set_prio(to_be_prio_changed, new_prio);
@@ -611,6 +652,8 @@ void hook_sysctl_mmio_read(uc_engine *uc, uc_mem_type type,
             }
 
             uc_mem_write(uc, addr, &out_val, size);
+            break;
+        case SYSCTL_CPACR:
             break;
         default:
             break;
@@ -731,7 +774,7 @@ void hook_sysctl_mmio_write(uc_engine *uc, uc_mem_type type,
             base_ind = 4 + (addr - SYSCTL_SHPR1);
 
             for(int i = 0; i < size; ++i) {
-                uint8_t new_prio = value & 0xff;
+                uint8_t new_prio = value;
                 uint8_t to_be_prio_changed = base_ind + i;
 
                 need_update |= set_prio(to_be_prio_changed, new_prio);
@@ -742,6 +785,13 @@ void hook_sysctl_mmio_write(uc_engine *uc, uc_mem_type type,
                 recalc_prios();
             }
             break;
+        case SYSCTL_CPACR:
+            uc_reg_write(uc, UC_ARM_REG_C1_C0_2, &value);
+            if (enable_hardfp) {
+                int32_t fpexc = (value & 0xf00000) == 0xf00000 ? 0x40000000 : 0;
+                uc_reg_write(uc, UC_ARM_REG_FPEXC, &fpexc);
+            }
+            break;
         default:
             break;
     }
@@ -749,6 +799,7 @@ void hook_sysctl_mmio_write(uc_engine *uc, uc_mem_type type,
 
 // Armv7-M ARM B1.5.8
 void PopStack(uc_engine *uc) {
+    bool hardfp_enabled = IS_HARDFP_ENABLED(uc);
     uint32_t frameptr;
     uc_reg_read(uc, UC_ARM_REG_SP, &frameptr);
     uc_err err;
@@ -758,24 +809,56 @@ void PopStack(uc_engine *uc) {
     print_state(uc);
     #endif
 
-    if((err = uc_mem_read(uc, frameptr, &saved_regs, FRAME_SIZE)) != UC_ERR_OK) {
+    if((err = uc_mem_read(uc, frameptr, &saved_regs, BASIC_FRAME_SIZE)) != UC_ERR_OK) {
         if(do_print_exit_info) {
-            printf("[NVIC] PopStack: reading saved context frame during interrupt exit failed for frameptr= 0x%08x: (%s)\n", frameptr, uc_strerror(err));
+            printf("[NVIC] PopStack: reading saved basic context frame during interrupt exit failed for frameptr= 0x%08x: (%s)\n", frameptr, uc_strerror(err));
             fflush(stdout);
         }
 
         force_crash(uc, err);
     }
+    frameptr += BASIC_FRAME_SIZE;
 
-    // Align stack
-    saved_regs.sp = frameptr + FRAME_SIZE;
-    if ((saved_regs.xpsr_retspr & (1 << 9)) != 0)
-    {
-        saved_regs.sp += 4;
+    if (hardfp_enabled) {
+        if((err = uc_mem_read(uc, frameptr, &saved_hardfp_regs, EXTENDED_FRAME_SIZE)) != UC_ERR_OK) {
+            if(do_print_exit_info) {
+                printf("[NVIC] PopStack: reading saved extended context frame during interrupt exit failed for frameptr= 0x%08x: (%s)\n", frameptr, uc_strerror(err));
+                fflush(stdout);
+            }
+
+            force_crash(uc, err);
+        }
+        frameptr += EXTENDED_FRAME_SIZE;
     }
 
-    // Here we restore all registers in one go, including sp
+    // Re-align the stack
+    if ((saved_regs.xpsr_retspr & (1 << 9)) != 0)
+    {
+        frameptr += 4;
+    }
+
+    // Restore registers
     if((err = uc_reg_write_batch(uc, &saved_reg_ids[0], (void **)(&saved_reg_ptrs[0]), NUM_SAVED_REGS)) != UC_ERR_OK){
+        if(do_print_exit_info) {
+            puts("[NVIC ERROR] PopStack: restoring registers failed\n");
+            print_state(uc);
+            fflush(stdout);
+        }
+        force_crash(uc, err);
+    }
+
+    if (hardfp_enabled) {
+        if ((err = uc_reg_write_batch(uc, &saved_hardfp_reg_ids[0], (void **)(&saved_hardfp_reg_ptrs[0]), NUM_SAVED_HARDFP_REGS)) != UC_ERR_OK){
+            if(do_print_exit_info) {
+                puts("[NVIC ERROR] PopStack: restoring registers failed\n");
+                print_state(uc);
+                fflush(stdout);
+            }
+            force_crash(uc, err);
+        }
+     }
+
+    if ((err = uc_reg_write(uc, UC_ARM_REG_SP, &frameptr)) != UC_ERR_OK){
         if(do_print_exit_info) {
             puts("[NVIC ERROR] PopStack: restoring registers failed\n");
             print_state(uc);
@@ -795,6 +878,8 @@ void PopStack(uc_engine *uc) {
 
 // B1.5.6
 void PushStack(uc_engine *uc, bool skip_instruction) {
+    bool hardfp_enabled = IS_HARDFP_ENABLED(uc);
+    int frame_size = BASIC_FRAME_SIZE;
     uc_err err;
 
     #ifdef DEBUG_NVIC
@@ -825,6 +910,26 @@ void PushStack(uc_engine *uc, bool skip_instruction) {
         force_crash(uc, err);
     }
 
+    if (hardfp_enabled) {
+        frame_size += EXTENDED_FRAME_SIZE;
+
+        if((err = uc_reg_read_batch(uc, &saved_hardfp_reg_ids[0], (void **)(&saved_hardfp_reg_ptrs[0]), NUM_SAVED_HARDFP_REGS)) != UC_ERR_OK) {
+            if(do_print_exit_info) {
+                puts("[NVIC ERROR] PushStack: Failed reading registers\n");
+                fflush(stdout);
+            }
+            force_crash(uc, err);
+        }
+    }
+
+    if((err = uc_reg_read(uc, UC_ARM_REG_SP, &frameptr)) != UC_ERR_OK) {
+        if(do_print_exit_info) {
+            puts("[NVIC ERROR] PushStack: Failed reading registers\n");
+            fflush(stdout);
+        }
+        force_crash(uc, err);
+    }
+
     if(skip_instruction) {
         uint64_t insn = 0;
         #ifdef DEBUG_NVIC
@@ -838,9 +943,10 @@ void PushStack(uc_engine *uc, bool skip_instruction) {
         #endif
     }
 
-    // We are always working on the current stack pointer, given the mode
-    frameptralign = (saved_regs.sp & ~spmask) >> 2;
-    frameptr = (saved_regs.sp - FRAME_SIZE) & spmask;
+    // Make space for the context frame
+    frameptralign = (frameptr & ~spmask) >> 2;
+    frameptr -= frame_size;
+    frameptr &= spmask;
 
     // Save the stack pointer with additional space
     uc_reg_write(uc, UC_ARM_REG_SP, &frameptr);
@@ -849,13 +955,24 @@ void PushStack(uc_engine *uc, bool skip_instruction) {
     saved_regs.xpsr_retspr |= (frameptralign << 9);
 
     // Push the context frame itself
-    if((err = uc_mem_write(uc, frameptr,  &saved_regs, (NUM_SAVED_REGS - 1)*sizeof(saved_regs.r0))) != UC_ERR_OK){
+    if((err = uc_mem_write(uc, frameptr,  &saved_regs, BASIC_FRAME_SIZE)) != UC_ERR_OK){
         if(do_print_exit_info) {
             printf("[NVIC] PopStack: writing saved context frame during interrupt entry failed (INVALID WRITE, frameptr= 0x%08x)\n", frameptr);
             print_state(uc);
             fflush(stdout);
         }
         force_crash(uc, err);
+    }
+
+    if (hardfp_enabled) {
+        if((err = uc_mem_write(uc, frameptr + BASIC_FRAME_SIZE,  &saved_hardfp_regs, EXTENDED_FRAME_SIZE)) != UC_ERR_OK){
+            if(do_print_exit_info) {
+                printf("[NVIC] PopStack: writing saved context frame during interrupt entry failed (INVALID WRITE, frameptr= 0x%08x)\n", frameptr);
+                print_state(uc);
+                fflush(stdout);
+            }
+            force_crash(uc, err);
+        }
     }
 
     #ifdef DEBUG_NVIC
@@ -867,6 +984,13 @@ void PushStack(uc_engine *uc, bool skip_instruction) {
 // B1.5.8
 void ExceptionReturn(uc_engine *uc, uint32_t ret_pc) {
     uint32_t ReturningExceptionNumber = nvic.active_irq;
+
+    // Notify peripherals of Exception Exit
+    if (interrupt_exit_cb) {
+        // printf("[ExceptionReturn] calling interrupt_exit_cb(%d)\n", ReturningExceptionNumber);
+        // fflush(stdout);
+        interrupt_exit_cb(ReturningExceptionNumber);
+    }
 
     // DeActivate(ReturningExceptionNumber)
     nvic.ExceptionActive[ReturningExceptionNumber] = 0;
@@ -898,6 +1022,13 @@ void ExceptionReturn(uc_engine *uc, uint32_t ret_pc) {
      * pending exception can now be taken.
      */
     recalc_prios();
+
+    if(do_print_nvic_log) {
+        printf("=== Interrupt Exit: returning from %d ===\n", ReturningExceptionNumber);fflush(stdout);
+    }
+    if(interrupt_trace_path) {
+        interrupt_trace_add_event(false, ReturningExceptionNumber);
+    }
 
     // Unset the active interrupt to allow active prio to drop
     nvic.active_irq = NVIC_NONE_ACTIVE;
@@ -1016,7 +1147,14 @@ static void ExceptionEntry(uc_engine *uc, bool is_tail_chained, bool skip_instru
         }
     }
 
-    if(!is_tail_chained) {
+    // Notify peripherals of Exception Entry
+    if (interrupt_entry_cb) {
+        // printf("[ExceptionEntry] calling interrupt_entry_cb(%d)\n", nvic.pending_irq);
+        // fflush(stdout);
+        interrupt_entry_cb(nvic.pending_irq);
+    }
+
+    if (!is_tail_chained) {
         /*
          * We are interrupting execution. We are either preempting an existing interrupt
          * (Handler Mode) or coming from normal execution (Thread Mode). So save frame.
@@ -1076,6 +1214,13 @@ static void ExceptionEntry(uc_engine *uc, bool is_tail_chained, bool skip_instru
     printf("Redirecting irq %d to isr: %08x\n", ExceptionNumber, isr_entry);
     #endif
 
+    if(do_print_nvic_log) {
+        printf("=== Interrupt Entry: from %d to %d ===\n", nvic.active_irq, ExceptionNumber);fflush(stdout);
+    }
+    if(interrupt_trace_path) {
+        interrupt_trace_add_event(true, ExceptionNumber);
+    }
+
     // Prepare new XPSR state
     uint32_t isr_xpsr = saved_regs.xpsr_retspr;
     // Reset ITSTATE bits
@@ -1122,10 +1267,6 @@ static void nvic_block_hook(uc_engine *uc, uint64_t address, uint32_t size, stru
     if (likely(GET_PRIMASK_NVIC(arg_nvic) == 0)) {
         // Interrupts are not disabled
         uint32_t basepri = GET_BASEPRI_NVIC(arg_nvic);
-
-        #ifdef DEBUG_NVIC
-        printf("basepri == %d, primask == 0\n", basepri); fflush(stdout);
-        #endif
 
         // Interrupts have previously been entirely disabled
         if(unlikely(arg_nvic->prev_primask))
@@ -1244,14 +1385,29 @@ void nvic_discard_snapshot(uc_engine *uc, void *snapshot) {
     free(snapshot);
 }
 
-uc_err init_nvic(uc_engine *uc, uint32_t vtor, uint32_t num_irq, uint32_t p_interrupt_limit, uint32_t num_disabled_interrupts, uint32_t *disabled_interrupts) {
+uc_err set_interrupt_callbacks(interrupt_pending_allowed_cb_t pend_allowed_cb, interrupt_entry_cb_t entry_cb, interrupt_exit_cb_t exit_cb) {
+    interrupt_pending_allowed_cb = pend_allowed_cb;
+    interrupt_entry_cb = entry_cb;
+    interrupt_exit_cb = exit_cb;
+
+    return UC_ERR_OK;
+}
+
+uc_err init_nvic(uc_engine *uc, uint32_t vtor, uint32_t num_irq, uint32_t num_prio_bits, uint32_t p_interrupt_limit, uint32_t num_disabled_interrupts, uint32_t *disabled_interrupts, bool p_enable_hardfp) {
     #ifdef DEBUG_NVIC
-    printf("[NVIC] init_nvic called with vtor: %x, num_irq: %d\n", vtor, num_irq); fflush(stdout);
+    printf("[NVIC] init_nvic called with vtor: %x, num_irq: %d, num_prio_bits: %d\n", vtor, num_irq, num_prio_bits); fflush(stdout);
     #endif
 
     if(num_irq > EXCEPTION_NO_MAX) {
         num_irq = EXCEPTION_NO_MAX;
     }
+    if(num_prio_bits > NUM_PRIO_BITS_MAX) {
+        num_prio_bits = NUM_PRIO_BITS_MAX;
+    }
+    prio_mask = 0xff << (NUM_PRIO_BITS_MAX - num_prio_bits);
+    #ifdef DEBUG_NVIC
+    printf("[NVIC] set prio_mask: %x\n", prio_mask); fflush(stdout);
+    #endif
 
     // Make sure SVC is enabled
     nvic.ExceptionEnabled[EXCEPTION_NO_SVC] = 1;
@@ -1279,6 +1435,8 @@ uc_err init_nvic(uc_engine *uc, uint32_t vtor, uint32_t num_irq, uint32_t p_inte
 
     for(uint32_t i = 0; i < num_disabled_interrupts; ++i)
         config_disabled_interrupts[i] = EXCEPTION_NO_EXTERNAL_START + disabled_interrupts[i];
+
+    enable_hardfp = p_enable_hardfp;
 
     // Get pointers to commonly used registers
     if(uc_reg_ptr(uc, UC_ARM_REG_PRIMASK, (void **) &nvic.reg_daif_ptr)) {
@@ -1323,6 +1481,9 @@ uint16_t get_num_enabled() {
 }
 
 uint8_t nth_enabled_irq_num(uint8_t n) {
+    /*
+     * Find an irq to pend based on fuzzing input byte.
+     */
     return nvic.enabled_irqs[n % nvic.num_enabled];
 }
 

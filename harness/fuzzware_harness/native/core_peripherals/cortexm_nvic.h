@@ -12,6 +12,7 @@
 #include "../timer.h"
 #include "../native_hooks.h"
 #include "../uc_snapshot.h"
+#include "../native_tracing.h"
 
 #define NVIC_ASSERTIONS
 
@@ -60,6 +61,7 @@
 #define SYSCTL_SHPR2 0xE000ED1C
 #define SYSCTL_SHPR3 0xE000ED20
 #define SYSCTL_SHCSR 0xE000ED24
+#define SYSCTL_CPACR 0xE000ED88
 #define SYSCTL_STIR  0xE000EF00
 
 #define SYSCTL_MMIO_BASE SCS_BASE
@@ -76,6 +78,8 @@
 
 #define NVIC_LOWEST_PRIO 256
 
+extern int do_print_nvic_log;
+extern char *interrupt_trace_path;
 
 struct CortexmNVIC {
     // We put some members to the front as they are required in the basic block hot path
@@ -115,9 +119,15 @@ struct CortexmNVIC {
     uint8_t enabled_irqs[NVIC_NUM_SUPPORTED_INTERRUPTS];
 };
 
-void pend_interrupt(uc_engine *uc, int exception_no);
+typedef int (*interrupt_pending_allowed_cb_t)(int);
+typedef void (*interrupt_entry_cb_t)(int);
+typedef void (*interrupt_exit_cb_t)(int);
 
-uc_err init_nvic(uc_engine *uc, uint32_t vtor, uint32_t num_irq, uint32_t interrupt_limit, uint32_t num_disabled_interrupts, uint32_t *disabled_interrupts);
+void pend_interrupt(uc_engine *uc, int exception_no);
+void clear_pend_interrupt(uc_engine *uc, int exception_no);
+
+uc_err set_interrupt_callbacks(interrupt_pending_allowed_cb_t pend_allowed_cb, interrupt_entry_cb_t entry_cb, interrupt_exit_cb_t exit_cb);
+uc_err init_nvic(uc_engine *uc, uint32_t vtor, uint32_t num_irq, uint32_t num_prio_bits, uint32_t interrupt_limit, uint32_t num_disabled_interrupts, uint32_t *disabled_interrupts,  bool p_enable_hardfp);
 
 // Added for fuzzing purposes
 uint16_t get_num_enabled();

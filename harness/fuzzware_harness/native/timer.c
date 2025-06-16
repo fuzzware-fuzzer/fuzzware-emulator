@@ -98,7 +98,7 @@ uint32_t add_timer(int64_t reload_val, timer_cb trigger_callback, void *trigger_
     timers.timers[ind].is_active = 0;
 
     #ifdef DEBUG_TIMER
-    printf("[TIMER] Added timer with id %d, Now: num_inuse=%u\n", ind, (int) timers.num_inuse);
+    printf("[TIMER] Added timer with id %d, reload val: %lx, Now: num_inuse=%u\n", ind, reload_val, (int) timers.num_inuse);
     print_timer(ind);
     #endif
 
@@ -109,7 +109,7 @@ static inline void sync_timers() {
     // This does not perform reloading as syncing is assumed to only occur and to be handled
     // within the timer callback. All manual timer syncs are on a non-elapsed state
 
-    // In case the countdown is 0, we are currently handling timer timer callbacks
+    // In case the countdown is 0, we are currently handling timer callbacks
     if(timers.cur_countdown != 0) {
         int64_t elapsed = timers.cur_interval - timers.cur_countdown;
 

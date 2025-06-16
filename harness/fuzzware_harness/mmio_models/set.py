@@ -1,5 +1,8 @@
 from ..util import ensure_rw_mapped, parse_address_value
+from ..globs import MMIO_HOOK_PC_ALL_ACCESS_SITES
+
 from .. import native
+
 
 def register_value_set_mmio_models(uc, starts, ends, pcs, val_lists):
     for start, end in zip(starts, ends):
@@ -16,7 +19,7 @@ def parse_value_set_handlers(symbols, declarations):
             'pc' in entry
         )
         address = parse_address_value(symbols, entry['addr'])
-        pc = parse_address_value(symbols, entry['pc'])
+        pc = parse_address_value(symbols, entry['pc']) if 'pc' in entry else MMIO_HOOK_PC_ALL_ACCESS_SITES
         vals = list(map(lambda v: parse_address_value(symbols, v), entry['vals']))
 
         starts.append(address)

@@ -2,6 +2,7 @@
 #include <unistd.h>
 #include <string.h>
 #include <unicorn/unicorn.h>
+#include <stdio.h>
 
 int get_instruction_size(uint64_t insn, bool is_thumb) {
     if(is_thumb) {
@@ -20,24 +21,24 @@ int get_instruction_size(uint64_t insn, bool is_thumb) {
     }
 }
 
-#define NUM_DUMPED_REGS 18
+#define NUM_DUMPED_REGS 20
 static int reg_ids[NUM_DUMPED_REGS] = {
     UC_ARM_REG_R0, UC_ARM_REG_R1, UC_ARM_REG_R2, UC_ARM_REG_R3, UC_ARM_REG_R4, UC_ARM_REG_R5, UC_ARM_REG_R6, UC_ARM_REG_R7,
     UC_ARM_REG_R8, UC_ARM_REG_R9, UC_ARM_REG_R10, UC_ARM_REG_R11, UC_ARM_REG_R12, UC_ARM_REG_LR, UC_ARM_REG_PC, UC_ARM_REG_XPSR,
-    UC_ARM_REG_SP, UC_ARM_REG_OTHER_SP
+    UC_ARM_REG_SP, UC_ARM_REG_OTHER_SP, UC_ARM_REG_C1_C0_2, UC_ARM_REG_FPEXC
 };
 static char *reg_names[NUM_DUMPED_REGS] = {
-    "r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7", "r8", "r9", "r10", "r11", "r12", "lr", "pc", "xpsr", "sp", "other_sp"
+    "r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7", "r8", "r9", "r10", "r11", "r12", "lr", "pc", "xpsr", "sp", "other_sp", "c1_c0_2", "fpexc"
 };
-void print_state(uc_engine *uc) {
+void print_state_to_file(uc_engine *uc, FILE *f) {
     uint32_t reg;
-    puts("\n==== UC Reg state ====");
+    fputs("\n==== UC Reg state ====\n", f);
     for (int i = 0; i < NUM_DUMPED_REGS; ++i)
     {
         uc_reg_read(uc, reg_ids[i], &reg);
-        printf("%s: 0x%08x\n", reg_names[i], reg);
+        fprintf(f, "%s: 0x%08x\n", reg_names[i], reg);
     }
-    puts("\n==== UC Stack state ====");
+    fputs("\n==== UC Stack state ====\n", f);
     uint32_t sp;
     uc_reg_read(uc, UC_ARM_REG_SP, &sp);
     for (int i = -4; i < 16; ++i)
@@ -46,16 +47,16 @@ void print_state(uc_engine *uc) {
         if(uc_mem_read(uc, sp+4*i, &val, 4)) {
             continue;
         }
-        printf("0x%08x: %08x", sp+4*i, val);
+        fprintf(f, "0x%08x: %08x", sp+4*i, val);
         if(!i) {
-            puts(" <---- sp");
+            fputs(" <---- sp\n", f);
         } else {
-            puts("");
+            fputs("\n", f);
         }
     }
-    puts("======================\n");
+    fputs("========================\n\n", f);
 
-    puts("\n==== UC Other Stack state ====");
+    fputs("\n==== UC Other Stack state ====\n", f);
     uc_reg_read(uc, UC_ARM_REG_OTHER_SP, &sp);
     for (int i = -4; i < 16; ++i)
     {
@@ -63,13 +64,17 @@ void print_state(uc_engine *uc) {
         if(uc_mem_read(uc, sp+4*i, &val, 4)) {
             continue;
         }
-        printf("0x%08x: %08x", sp+4*i, val);
+        fprintf(f, "0x%08x: %08x", sp+4*i, val);
         if(!i) {
-            puts(" <---- sp");
+            fputs(" <---- sp\n", f);
         } else {
-            puts("");
+            fprintf(f, "\n");
         }
     }
-    puts("======================\n");
-    fflush(stdout);
+    fputs("========================\n", f);
+    fflush(f);
+}
+
+void print_state(uc_engine *uc) {
+    print_state_to_file(uc, stdout);
 }

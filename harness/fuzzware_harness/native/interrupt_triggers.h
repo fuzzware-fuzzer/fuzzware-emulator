@@ -2,6 +2,11 @@
 #define INTERRUPT_TRIGGERS_H
 
 #include <unicorn/unicorn.h>
+#include "core_peripherals/cortexm_nvic.h"
+#include "native_hooks.h"
+
+typedef int (*interrupt_pending_allowed_cb_t)(int);
+extern interrupt_pending_allowed_cb_t interrupt_pending_allowed_cb;
 
 #define IRQ_FUZZ_MODE_FIXED 0
 #define IRQ_FUZZ_MODE_FUZZ_ENABLED_IRQ_INDEX 1
